@@ -174,14 +174,28 @@ def _png_bytes(image: Image.Image, cols: int, rows: int) -> bytes:
     return buf.getvalue()
 
 
-def _kitty_payload(png: bytes, cols: int, rows: int) -> bytes:
+def _in_tmux() -> bool:
+    """True when running inside tmux (its multiplexer swallows graphics APCs)."""
+    return bool(os.environ.get("TMUX"))
+
+
+def _tmux_wrap(esc: bytes) -> bytes:
+    """Wrap one escape sequence in tmux's passthrough DCS so it reaches the outer
+    terminal. tmux forwards the inner bytes verbatim with each ESC un-doubled;
+    if ``allow-passthrough`` is off it strips the whole thing (no garbage)."""
+    return b"\x1bPtmux;" + esc.replace(b"\x1b", b"\x1b\x1b") + b"\x1b\\"
+
+
+def _kitty_payload(png: bytes, cols: int, rows: int, tmux: bool = False) -> bytes:
     """Kitty graphics escape(s) for ``png``, chunked at 4096 base64 bytes.
 
     ``C=1`` keeps the cursor put so the caller controls placement; ``c``/``r``
-    scale the image into that many cells.
+    scale the image into that many cells; ``q=2`` suppresses the terminal's OK/
+    error replies (which would otherwise print as stray text). Under tmux each
+    chunk is wrapped in a passthrough envelope so it is not swallowed.
     """
     b64 = base64.standard_b64encode(png)
-    ctrl = f"a=T,f=100,C=1,c={cols},r={rows}"
+    ctrl = f"a=T,f=100,C=1,q=2,c={cols},r={rows}"
     chunk = 4096
     parts: list[bytes] = []
     i, total, first = 0, len(b64), True
@@ -190,7 +204,8 @@ def _kitty_payload(png: bytes, cols: int, rows: int) -> bytes:
         i += chunk
         more = 1 if i < total else 0
         head = (f"{ctrl},m={more}" if first else f"m={more}").encode()
-        parts.append(b"\x1b_G" + head + b";" + piece + b"\x1b\\")
+        esc = b"\x1b_G" + head + b";" + piece + b"\x1b\\"
+        parts.append(_tmux_wrap(esc) if tmux else esc)
         first = False
     return b"".join(parts)
 
@@ -202,16 +217,19 @@ def _show(image: Image.Image, proto: str) -> bool:
         return False
     cols, rows = _fit_cells(image.width, image.height)
     png = _png_bytes(image, cols, rows)
+    tmux = _in_tmux()
 
     if proto == "kitty":
         # Reserve `rows` lines (scrolling if near the bottom), jump back to the
         # top of that block, draw without moving the cursor (C=1), then step
         # below the image so the following "saved ..." lines land underneath.
+        # Cursor moves and newlines are handled by tmux natively; only the
+        # graphics APC needs passthrough wrapping.
         out = (
             b"\n"
             + b"\n" * rows
             + f"\x1b[{rows}A".encode()
-            + _kitty_payload(png, cols, rows)
+            + _kitty_payload(png, cols, rows, tmux)
             + f"\x1b[{rows}B".encode()
         )
     else:  # iterm2
@@ -219,8 +237,10 @@ def _show(image: Image.Image, proto: str) -> bool:
         seq = (
             f"\x1b]1337;File=inline=1;size={len(png)};width={cols};height={rows};"
             f"preserveAspectRatio=1:{b64}\x07"
-        )
-        out = b"\n" + seq.encode() + b"\n"
+        ).encode()
+        if tmux:
+            seq = _tmux_wrap(seq)
+        out = b"\n" + seq + b"\n"
 
     buffer.write(out)
     buffer.flush()
