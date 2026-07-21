@@ -140,9 +140,14 @@ LocalOpt = typer.Option(
     False, "--local",
     help="Run on this machine even if a remote is configured (imggen remote set).",
 )
+Preview = typer.Option(
+    True, "--preview/--no-preview",
+    help="Show the result inline in graphics-capable terminals "
+         "(Ghostty/Kitty/iTerm2); batches as a grid. No-op elsewhere.",
+)
 
 
-def _go(req: GenRequest, out, embed_metadata, local: bool = False):
+def _go(req: GenRequest, out, embed_metadata, local: bool = False, preview: bool = True):
     from . import remote
 
     # A configured remote wins unless --local is passed. On the remote path we
@@ -155,7 +160,7 @@ def _go(req: GenRequest, out, embed_metadata, local: bool = False):
         typer.secho(f"device: {describe()}", fg=typer.colors.BLUE)
     typer.secho(f"generating [{req.kind}] ...", fg=typer.colors.CYAN)
     try:
-        paths = run_and_save(req, out, embed_metadata, use_remote=bool(ep))
+        paths = run_and_save(req, out, embed_metadata, use_remote=bool(ep), preview=preview)
     except remote.RemoteError as exc:
         # No fallback by design: a configured-but-unreachable remote is an error.
         typer.secho(f"remote error: {exc}", fg=typer.colors.RED)
@@ -249,6 +254,7 @@ def sd(
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
     local: bool = LocalOpt,
+    preview: bool = Preview,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -265,7 +271,7 @@ def sd(
             init=init, strength=strength, device=device, dtype=dtype, offload=offload,
             hf_token=hf_token,
         ),
-        out, metadata, local,
+        out, metadata, local, preview,
     )
 
 
@@ -291,6 +297,7 @@ def qwen_image(
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
     local: bool = LocalOpt,
+    preview: bool = Preview,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -307,7 +314,7 @@ def qwen_image(
             seed=seed, num=num, device=device, dtype=dtype, offload=offload,
             hf_token=hf_token,
         ),
-        out, metadata, local,
+        out, metadata, local, preview,
     )
 
 
@@ -332,6 +339,7 @@ def qwen_image_edit(
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
     local: bool = LocalOpt,
+    preview: bool = Preview,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -348,7 +356,7 @@ def qwen_image_edit(
             model=model, steps=steps, cfg=cfg, sampler=sampler, seed=seed, num=num,
             device=device, dtype=dtype, offload=offload, hf_token=hf_token,
         ),
-        out, metadata, local,
+        out, metadata, local, preview,
     )
 
 
@@ -380,6 +388,7 @@ def see_through(
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
     local: bool = LocalOpt,
+    preview: bool = Preview,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -401,7 +410,7 @@ def see_through(
             cfg=cfg, sampler=sampler, seed=seed, num=num, device=device, dtype=dtype,
             offload=offload, hf_token=hf_token,
         ),
-        out, metadata, local,
+        out, metadata, local, preview,
     )
 
 

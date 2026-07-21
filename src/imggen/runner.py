@@ -57,6 +57,7 @@ def run_and_save(
     out: str | None,
     embed_metadata: bool = True,
     use_remote: bool = False,
+    preview: bool = True,
 ) -> list[Path]:
     # A configured remote runs the backend on another host and returns the same
     # (image, meta, hint) tuples; saving stays local. No fallback: remote.run
@@ -94,6 +95,13 @@ def run_and_save(
         if image.mode == "RGBA" and path.suffix.lower() not in (".png", ".webp"):
             path = path.with_suffix(".png")
         saved.append(save_image(image, path, meta, embed_metadata))
+
+    # Draw the result inline in graphics-capable terminals (Ghostty/Kitty/iTerm2);
+    # a no-op elsewhere. Batches are gridded. Never fails a completed run.
+    if preview:
+        from . import termimg
+
+        termimg.preview([image for image, _, _ in results])
 
     return saved
 
