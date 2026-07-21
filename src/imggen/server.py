@@ -73,7 +73,8 @@ def _make_handler(api_key: str | None):
 
         # --- routes ---
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-            if self.path.rstrip("/") in ("/health", ""):
+            path = self.path.rstrip("/")
+            if path in ("/health", ""):
                 from .device import describe
                 from .manifest import KINDS
 
@@ -84,6 +85,16 @@ def _make_handler(api_key: str | None):
                     "device": describe(),
                     "kinds": list(KINDS) + ["see-through"],
                 })
+            elif path == "/models":
+                # The presets this host would resolve --model against, so a remote
+                # client lists/completes the server's models, not its own. Light
+                # (reads manifests only); gated like /generate when a key is set.
+                if not self._authed():
+                    self._send_json(401, {"error": "missing or invalid api key"})
+                    return
+                from .registry import models_info
+
+                self._send_json(200, models_info())
             else:
                 self._send_json(404, {"error": "not found"})
 

@@ -67,6 +67,31 @@ class ResolvedModel:
     defaults: dict = field(default_factory=dict)  # manifest generation defaults
 
 
+def models_info() -> dict:
+    """A serializable listing of installed presets plus the per-kind defaults.
+
+    Returns ``{"models": {kind: [{name, summary, gated, description}, ...]},
+    "defaults": {kind: name}}``. Shared by the ``imggen models`` command and the
+    ``/models`` server endpoint so a remote client renders the *server's* presets
+    exactly as it would render local ones (same shape, no manifest objects on the
+    wire). Reads manifests only — no torch, so it stays light on the CLI path.
+    """
+    from . import manifest as mf
+
+    models: dict[str, list[dict]] = {}
+    for kind, mans in mf.list_manifests().items():
+        models[kind] = [
+            {
+                "name": m.name,
+                "summary": m.summary(),
+                "gated": m.gated,
+                "description": m.description,
+            }
+            for m in mans
+        ]
+    return {"models": models, "defaults": dict(DEFAULT_MODEL)}
+
+
 def resolve_model(
     kind: str, model_arg: str | None, token: str | None = None
 ) -> ResolvedModel:

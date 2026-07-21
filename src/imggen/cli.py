@@ -45,17 +45,43 @@ def _complete_sampler(incomplete: str):
     return [n for n in schedulers.NAMES if n.startswith(incomplete)]
 
 
-def _complete_model(ctx: typer.Context, incomplete: str):
-    """Complete --model with the presets installed for this command's kind."""
+def _model_names_for_kind(kind: str, local: bool = False) -> list[str]:
+    """Preset names available for ``kind`` — the remote's when one is configured.
+
+    With a remote set, completion should offer the *server's* presets (that is
+    where ``--model`` is resolved), so we query ``/models`` with a short timeout.
+    ``local=True`` (the caller saw ``--local`` on the line) forces the local
+    presets instead, mirroring what ``--local`` does at generation time. Must
+    never raise: on any failure return ``[]`` so <TAB> stays silent rather than
+    erroring. No local fallback when a remote is used — that would suggest names
+    the server may not have (matches the no-fallback design).
+    """
+    from . import remote
+
+    if not local and remote.endpoint():
+        try:
+            info = remote.models(timeout=2)
+        except Exception:
+            return []
+        return [m["name"] for m in info.get("models", {}).get(kind, [])]
     from .manifest import list_manifests
 
-    cmd = getattr(ctx.command, "name", None) or ""
-    kind = "sd" if cmd == "see-through" else cmd
     try:
-        mans = list_manifests().get(kind, [])
+        return [m.name for m in list_manifests().get(kind, [])]
     except Exception:
         return []
-    return [m.name for m in mans if m.name.startswith(incomplete)]
+
+
+def _complete_model(ctx: typer.Context, incomplete: str):
+    """Complete --model with the presets installed for this command's kind.
+
+    Honours a ``--local`` already typed on the line (``ctx.params``): completion
+    then lists this machine's presets, matching the run it would produce.
+    """
+    cmd = getattr(ctx.command, "name", None) or ""
+    kind = "sd" if cmd == "see-through" else cmd
+    local = bool(ctx.params.get("local"))
+    return [n for n in _model_names_for_kind(kind, local) if n.startswith(incomplete)]
 
 
 def _complete_catalog_alias(ctx: typer.Context, incomplete: str):
@@ -612,22 +638,32 @@ def samplers():
     )
 
 
-@app.command("models")
-def models():
-    """List available model presets (~/.config/imggen/settings/<kind>/<name>.json)."""
-    from .manifest import list_manifests, user_settings_dir
-    from .registry import DEFAULT_MODEL
+def _render_models(source: str, models_by_kind: dict, defaults: dict, only: str | None) -> None:
+    """Print the ``imggen models`` listing from a :func:`registry.models_info` dict.
 
-    typer.secho(f"Presets ({user_settings_dir()}/<kind>/<name>.json):", bold=True)
-    for kind, mans in list_manifests().items():
+    ``models_by_kind`` maps kind -> list of ``{name, summary, gated, description}``
+    (local or remote — same shape). ``only`` restricts the output to one kind.
+    """
+    typer.secho(f"Presets ({source}):", bold=True)
+    kinds = [only] if only else list(models_by_kind.keys())
+    shown = False
+    for kind in kinds:
+        mans = models_by_kind.get(kind) or []
+        if not mans:
+            continue
+        shown = True
         typer.secho(f"  {kind}:", fg=typer.colors.CYAN)
-        for man in mans:
-            gated = "  [gated]" if man.gated else ""
-            desc = f"  — {man.description}" if man.description else ""
-            typer.echo(f"    {man.name:22s} -> {man.summary()}{gated}{desc}")
+        for m in mans:
+            gated = "  [gated]" if m.get("gated") else ""
+            desc = f"  — {m['description']}" if m.get("description") else ""
+            typer.echo(f"    {m['name']:22s} -> {m.get('summary', '')}{gated}{desc}")
+    if only and not shown:
+        typer.secho(f"  (no presets installed for '{only}')", fg=typer.colors.YELLOW)
 
     typer.secho("\nDefault per kind:", bold=True)
-    for kind, name in DEFAULT_MODEL.items():
+    for kind, name in defaults.items():
+        if only and kind != only:
+            continue
         typer.echo(f"  {kind:16s} -> {name}")
 
     typer.secho(
@@ -635,6 +671,56 @@ def models():
         "Create a preset with `imggen <kind> ... --save --alias NAME`.",
         fg=typer.colors.BRIGHT_BLACK,
     )
+
+
+@app.command("models")
+def models(
+    kind: Optional[str] = typer.Argument(
+        None, help="Only list presets for this kind (sd | qwen-image | qwen-image-edit).",
+        autocompletion=_complete_kind,
+    ),
+    local: bool = LocalOpt,
+):
+    """List the model presets (--model aliases) available for each kind.
+
+    With a remote configured (imggen remote set), this lists the remote's presets
+    — that is where --model is resolved — so pass --local to list this machine's
+    presets instead. Give a KIND to narrow the output to one kind.
+    """
+    from . import remote
+    from .manifest import KINDS
+
+    only = None
+    if kind is not None:
+        only = _preset_kind(kind)  # see-through -> sd (its presets live under sd)
+        if only not in KINDS:
+            raise typer.BadParameter(
+                f"unknown kind '{kind}'; expected one of {', '.join(KINDS)} "
+                "(see-through presets live under 'sd')",
+                param_hint="KIND",
+            )
+
+    ep = None if local else remote.endpoint()
+    if ep:
+        try:
+            info = remote.models(timeout=5)
+        except remote.RemoteError as exc:
+            typer.secho(f"remote error: {exc}", fg=typer.colors.RED)
+            typer.secho(
+                "  (no local fallback; run with --local to list this machine's "
+                "presets, or `imggen remote clear`)",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+            raise typer.Exit(1)
+        source = f"remote {ep}"
+    else:
+        from .manifest import user_settings_dir
+        from .registry import models_info
+
+        info = models_info()
+        source = f"{user_settings_dir()}/<kind>/<name>.json"
+
+    _render_models(source, info.get("models", {}), info.get("defaults", {}), only)
 
 
 @app.command()

@@ -193,6 +193,29 @@ def ping(ep: str | None = None, api_key: str | None = None, timeout: float = 5.0
         raise RemoteError(f"cannot reach imggen server at {url}: {_explain(exc)}") from exc
 
 
+def models(ep: str | None = None, api_key: str | None = None, timeout: float = 5.0) -> dict:
+    """Fetch the server's installed presets + defaults from ``/models``.
+
+    Returns the same structure as :func:`imggen.registry.models_info`
+    (``{"models": {kind: [...]}, "defaults": {kind: name}}``), so the client can
+    render a remote model list identically to a local one. Raises
+    :class:`RemoteError` on any transport / auth / server failure (including a
+    server too old to expose ``/models``) — there is no local fallback.
+    """
+    cfg = _resolve_cfg(ep, api_key)
+    url = _base_url(cfg["endpoint"]) + "/models"
+    request = urllib.request.Request(url, headers=_headers(cfg), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raise RemoteError(
+            f"cannot list models at {url} ({exc.code}): {_http_error_detail(exc)}"
+        ) from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RemoteError(f"cannot list models at {url}: {_explain(exc)}") from exc
+
+
 def _gen_timeout() -> float | None:
     raw = os.environ.get("IMGGEN_REMOTE_TIMEOUT", "3600")
     try:
