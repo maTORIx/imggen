@@ -108,14 +108,25 @@ def _model_meta(resolved: ResolvedModel) -> dict:
     return {"model": resolved.ref}
 
 
+def _cache_key(kind: str, resolved: ResolvedModel, dtype, device: str, offload: bool):
+    """Warm-cache key: the checkpoint file distinguishes GGUF vs fp16 variants."""
+    tag = resolved.single_file.path if resolved.single_file is not None else resolved.ref
+    return (kind, resolved.ref, tag, str(dtype), device, bool(offload))
+
+
 def generate(req: GenRequest):
     from diffusers import QwenImagePipeline
 
     device, dtype, seeds = common.prepare(req)
     token = hf_token(req.hf_token)
     resolved = resolve_model(req.kind, req.model, token)
-    pipe = _build_pipeline(QwenImagePipeline, resolved, dtype, token)
-    pipe = common.place(pipe, device, req.offload)
+    key = _cache_key("qwen-image", resolved, dtype, device, req.offload)
+    pipe = common.cached_pipeline(
+        key,
+        lambda: common.place(
+            _build_pipeline(QwenImagePipeline, resolved, dtype, token), device, req.offload
+        ),
+    )
 
     d = resolved.defaults
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])
@@ -174,8 +185,13 @@ def generate_edit(req: GenRequest):
     device, dtype, seeds = common.prepare(req)
     token = hf_token(req.hf_token)
     resolved = resolve_model(req.kind, req.model, token)
-    pipe = _build_pipeline(QwenImageEditPlusPipeline, resolved, dtype, token)
-    pipe = common.place(pipe, device, req.offload)
+    key = _cache_key("qwen-image-edit", resolved, dtype, device, req.offload)
+    pipe = common.cached_pipeline(
+        key,
+        lambda: common.place(
+            _build_pipeline(QwenImageEditPlusPipeline, resolved, dtype, token), device, req.offload
+        ),
+    )
 
     d = resolved.defaults
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])

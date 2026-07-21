@@ -110,6 +110,43 @@ soft/semi-transparent edges (hair, glass, glow) that background removal cannot.
 `--method matte` uses BiRefNet background removal instead; it is used
 automatically for `--init` decomposition and for `--mode layers`.
 
+### Remote execution (`imggen serve` / `imggen remote`)
+
+Run the heavy generation on a GPU box and drive it from any other machine. The
+GPU host serves; the client ships the request and saves the returned image
+locally — output paths, `--out`, and metadata stay on the client.
+
+```bash
+# On the GPU host — run a foreground daemon (Ctrl-C to stop):
+imggen serve --host 0.0.0.0 --port 7863 --api-key SECRET
+
+# On the client — point it at the host, then use imggen exactly as before:
+imggen remote set 192.168.1.10:7863 --api-key SECRET
+imggen remote status                       # ping: prints the server's device/version
+imggen sd -p "a red fox" -o fox.png        # runs on the host, saves fox.png here
+imggen qwen-image-edit -i in.png -p "make it snow" -o out.png   # --init is uploaded
+
+imggen sd -p "..." --local                 # run on THIS machine for one command
+imggen remote clear                        # forget the remote; back to local
+```
+
+Details:
+
+- **No fallback.** Once a remote is set, generation goes there; if the server is
+  unreachable the command errors and exits non-zero (it does *not* silently run
+  locally). Use `--local` for a one-off local run, or `imggen remote clear`.
+- **`--api-key`** is optional. When set on `serve`, clients must present the same
+  token (`Authorization: Bearer`). `/health` needs no auth so `remote status`
+  can probe. Plain HTTP — put it behind a VPN/SSH tunnel or reverse proxy with
+  TLS if it crosses an untrusted network.
+- **Models resolve on the server.** `--model` names a preset / repo / path *on
+  the host*; a client-only local path won't exist there. `imggen pull` and your
+  presets live on the host. The last-used model is kept warm in memory between
+  requests; one generation runs at a time.
+- No new dependencies (standard-library HTTP). `$IMGGEN_REMOTE` /
+  `$IMGGEN_API_KEY` override the stored config; the endpoint is saved to
+  `~/.config/imggen/remote.json`.
+
 ## Install
 
 Built and tested on **aarch64 + NVIDIA GB10 (Blackwell)** with CUDA 13.0 wheels.
@@ -198,10 +235,13 @@ List aliases: `imggen models`.
 | `--offload` | CPU-offload to save VRAM |
 | `--hf-token` | token for gated models (or set `HF_TOKEN`) |
 | `--no-metadata` | do not embed parameters in the PNG |
+| `--local` | run on this machine even if a remote is configured |
 | `--save --alias NAME` | save these options as a reusable preset (no generation) |
 
 Utility commands: `imggen models` (list presets), `imggen samplers` (list
-sampler names), `imggen init` (re-seed the built-in presets).
+sampler names), `imggen init` (re-seed the built-in presets), `imggen serve`
+(run a generation daemon), `imggen remote set/status/clear` (drive a remote
+daemon from this machine).
 
 ## Gated models
 

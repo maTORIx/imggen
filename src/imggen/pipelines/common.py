@@ -21,6 +21,47 @@ def prepare(req: GenRequest):
     return device, dtype, seeds
 
 
+# --- warm pipeline cache (server mode) ----------------------------------
+# A one-shot CLI run loads a model once and exits, so caching would be pointless
+# there and is disabled by default. ``imggen serve`` sets IMGGEN_PIPELINE_CACHE
+# to keep the last-used, already-placed pipeline resident (LRU=1) so repeated
+# requests for the same model skip the (tens-of-seconds) load. A request for a
+# different model unloads the previous pipeline and frees CUDA memory first.
+_PIPE_CACHE: dict = {}
+
+
+def cache_enabled() -> bool:
+    return os.environ.get("IMGGEN_PIPELINE_CACHE", "").lower() not in ("", "0", "false", "no")
+
+
+def cached_pipeline(key, build):
+    """Return the warm pipeline for ``key``, building it (evicting any other) on miss.
+
+    ``build`` must return a fully-placed pipeline (i.e. wrap :func:`place`), since
+    it runs only on a cache miss. The scheduler and per-call kwargs are applied by
+    the caller on every request, so only the load+placement is cached.
+    """
+    if not cache_enabled():
+        return build()
+    cached = _PIPE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if _PIPE_CACHE:  # LRU=1: drop the resident pipeline before loading another
+        _PIPE_CACHE.clear()
+        _free_memory()
+    pipe = build()
+    _PIPE_CACHE[key] = pipe
+    return pipe
+
+
+def _free_memory() -> None:
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def generators(seeds: list[int], device: str) -> list[torch.Generator]:
     # CUDA generators are fine; for MPS fall back to CPU generators.
     gen_device = "cpu" if device == "mps" else device

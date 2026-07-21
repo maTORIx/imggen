@@ -20,6 +20,11 @@ uv run imggen pull [kind] --list     # list catalog presets published under mode
 uv run imggen pull sd pony-diffusion-v6-xl   # install a catalog preset + download its weights now
 uv run imggen samplers               # list --sampler aliases
 uv run imggen init [--force]         # (re)seed ~/.config/imggen/settings with built-in presets
+uv run imggen serve [--host 0.0.0.0 --port 7863 --api-key KEY]   # run a generation daemon on this GPU host
+uv run imggen remote set HOST:PORT [--api-key KEY]   # (client) route every generate through that daemon
+uv run imggen remote status          # ping the configured remote (device/version)
+uv run imggen remote clear           # forget the remote; run locally again
+uv run imggen <kind> ... --local     # force local for one run even if a remote is set
 ```
 
 Installed as a tool (`uv tool install git+...`), drop the `uv run` prefix. If not on CUDA 13.0, swap `pytorch-cu130` → the matching index in `pyproject.toml`.
@@ -31,6 +36,8 @@ End-to-end flow — the CLI never imports a backend; `GenRequest` is the only co
 ```
 cli.py (Typer)  ->  GenRequest (params.py)  ->  runner.run_and_save
   ->  pipelines/__init__.py::run   # single kind->backend switch, lazy imports
+      # (remote configured? runner calls remote.run -> HTTP -> `imggen serve`
+      #  -> pipelines.run on the GPU host -> same result list back)
         ->  <backend>.generate(req) -> list[(PIL.Image, metadata, path_hint)]
               ->  registry.resolve_model(kind, --model, token) -> ResolvedModel
                     ->  manifest.load_manifest / materialize   # JSON manifest -> download weights
@@ -41,6 +48,10 @@ cli.py (Typer)  ->  GenRequest (params.py)  ->  runner.run_and_save
 Key seams to understand before changing anything:
 
 - **Backend contract is duck-typed, not an ABC.** Each `pipelines/<name>.py` exposes a module-level `generate(req) -> list[(image, dict, path_hint)]`. `path_hint` is `None` for a plain image, or `"fg"`/`"bg"` for see-through layer pairs (drives `_fg`/`_bg` output suffixes and forces `.png` for RGBA). Dispatch lives only in `pipelines/__init__.py::run`.
+
+- **Remote execution reuses that same result seam.** `runner.run_and_save` calls `remote.run(req)` instead of `pipelines.run(req)` when a remote is configured (`imggen remote set`); both return the identical `list[(image, meta, hint)]`, so path building + saving stay client-side. `remote.py` (client) is stdlib-only and **must stay torch/diffusers/PIL-free at import** (PIL is lazy inside `run`) — it sits on the `cli.py` import path, same rule as `device.py`. `server.py` (`imggen serve`) is the heavy half: a stdlib `ThreadingHTTPServer` that re-runs `pipelines.run` behind a single generation lock, lazy-imported only by the `serve` command. **No fallback by design:** a configured-but-unreachable remote raises `remote.RemoteError` and the CLI exits non-zero (a 5s `/health` preflight makes that fast); `--local` forces local for one run. `--init` images are shipped inline (base64) and rehydrated to a server temp file. `--model` is resolved on the *server*, so a client-local path only works if it exists on the server too. Config lives at `<config_home>/remote.json` (`$IMGGEN_REMOTE`/`$IMGGEN_API_KEY` override).
+
+- **Server keeps one model warm.** `common.cached_pipeline(key, build)` holds a single already-placed pipeline (LRU=1), gated by `$IMGGEN_PIPELINE_CACHE` which `serve` sets — so one-shot CLI runs are unaffected. Backends route load+`place` through it (`sd.py`, `qwen.py`); a different `--model` evicts the resident pipeline and frees CUDA memory before loading. Only load+placement is cached; the scheduler and per-call kwargs are re-applied every request.
 
 - **`registry.py` is a *model* resolver, not a plugin registry.** `resolve_model` turns `--model` into a `ResolvedModel` with precedence: existing local path → manifest name (`settings/<kind>/<name>.json`) → raw HF repo id. `DEFAULT_MODEL` gives the per-kind default. Qwen single-file/GGUF transformers are wrapped in `SingleFileTransformer` (transformer loaded via `from_single_file`; text encoder/VAE/scheduler come from `base_repo`).
 
@@ -60,6 +71,7 @@ Key seams to understand before changing anything:
 
 - Presets/manifests: `~/.config/imggen/settings/<kind>/<name>.json` (override with `$IMGGEN_HOME` or `$XDG_CONFIG_HOME`). Package-bundled built-ins live at `src/imggen/settings/` and are copied into the user dir on first use, never clobbering user edits.
 - Weight cache for `url`-sourced models: `~/.cache/imggen/models/<kind>/` (`$IMGGEN_CACHE`). HF-sourced weights use the standard HF cache.
+- Remote endpoint (client): `~/.config/imggen/remote.json` (`{endpoint, api_key?}`; `$IMGGEN_REMOTE`/`$IMGGEN_API_KEY` override). Absent → local execution.
 - Gated models: `--hf-token` / `$HF_TOKEN` (also `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACE_TOKEN`).
 
 ## Hardware notes

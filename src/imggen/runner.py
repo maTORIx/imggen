@@ -11,8 +11,21 @@ from .imageio import build_output_paths, save_image
 from .params import GenRequest
 
 
-def run_and_save(req: GenRequest, out: str | None, embed_metadata: bool = True) -> list[Path]:
-    results = pipelines.run(req)
+def run_and_save(
+    req: GenRequest,
+    out: str | None,
+    embed_metadata: bool = True,
+    use_remote: bool = False,
+) -> list[Path]:
+    # A configured remote runs the backend on another host and returns the same
+    # (image, meta, hint) tuples; saving stays local. No fallback: remote.run
+    # raises RemoteError (propagated to the CLI) if the server is unreachable.
+    if use_remote:
+        from . import remote
+
+        results = remote.run(req)
+    else:
+        results = pipelines.run(req)
 
     # Group results into base images. A new base starts on a plain result
     # (hint None) or on the foreground of a layer pair (hint "fg"); the

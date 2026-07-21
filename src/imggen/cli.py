@@ -109,12 +109,35 @@ Meta = typer.Option(True, "--metadata/--no-metadata", help="Embed parameters in 
 Save = typer.Option(False, "--save", help="Save these options as a reusable preset (does not generate).")
 Alias = typer.Option(None, "--alias", help="Preset name to save under (settings/<kind>/<alias>.json).")
 Desc = typer.Option(None, "--desc", help="Optional description stored in the preset.")
+LocalOpt = typer.Option(
+    False, "--local",
+    help="Run on this machine even if a remote is configured (imggen remote set).",
+)
 
 
-def _go(req: GenRequest, out, embed_metadata):
-    typer.secho(f"device: {describe()}", fg=typer.colors.BLUE)
+def _go(req: GenRequest, out, embed_metadata, local: bool = False):
+    from . import remote
+
+    # A configured remote wins unless --local is passed. On the remote path we
+    # never import torch here (describe() would): the client just ships the
+    # request and saves what comes back.
+    ep = None if local else remote.endpoint()
+    if ep:
+        typer.secho(f"remote: {ep}", fg=typer.colors.BLUE)
+    else:
+        typer.secho(f"device: {describe()}", fg=typer.colors.BLUE)
     typer.secho(f"generating [{req.kind}] ...", fg=typer.colors.CYAN)
-    paths = run_and_save(req, out, embed_metadata)
+    try:
+        paths = run_and_save(req, out, embed_metadata, use_remote=bool(ep))
+    except remote.RemoteError as exc:
+        # No fallback by design: a configured-but-unreachable remote is an error.
+        typer.secho(f"remote error: {exc}", fg=typer.colors.RED)
+        typer.secho(
+            "  (no local fallback; run with --local to generate here, "
+            "or `imggen remote clear`)",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+        raise typer.Exit(1)
     echo_saved(paths)
 
 
@@ -198,6 +221,7 @@ def sd(
     offload: bool = Offload,
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
+    local: bool = LocalOpt,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -214,7 +238,7 @@ def sd(
             init=init, strength=strength, device=device, dtype=dtype, offload=offload,
             hf_token=hf_token,
         ),
-        out, metadata,
+        out, metadata, local,
     )
 
 
@@ -239,6 +263,7 @@ def qwen_image(
     offload: bool = Offload,
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
+    local: bool = LocalOpt,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -255,7 +280,7 @@ def qwen_image(
             seed=seed, num=num, device=device, dtype=dtype, offload=offload,
             hf_token=hf_token,
         ),
-        out, metadata,
+        out, metadata, local,
     )
 
 
@@ -279,6 +304,7 @@ def qwen_image_edit(
     offload: bool = Offload,
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
+    local: bool = LocalOpt,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -295,7 +321,7 @@ def qwen_image_edit(
             model=model, steps=steps, cfg=cfg, sampler=sampler, seed=seed, num=num,
             device=device, dtype=dtype, offload=offload, hf_token=hf_token,
         ),
-        out, metadata,
+        out, metadata, local,
     )
 
 
@@ -326,6 +352,7 @@ def see_through(
     offload: bool = Offload,
     hf_token: Optional[str] = HfToken,
     metadata: bool = Meta,
+    local: bool = LocalOpt,
     save: bool = Save,
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
@@ -347,7 +374,7 @@ def see_through(
             cfg=cfg, sampler=sampler, seed=seed, num=num, device=device, dtype=dtype,
             offload=offload, hf_token=hf_token,
         ),
-        out, metadata,
+        out, metadata, local,
     )
 
 
@@ -614,6 +641,113 @@ def version():
     """Show version and device info."""
     typer.echo(f"imggen {__version__}")
     typer.echo(describe())
+
+
+# --- remote execution: serve + client config ----------------------------
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind address (0.0.0.0 = all interfaces)."),
+    port: int = typer.Option(7863, "--port", help="Port to listen on."),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", envvar="IMGGEN_API_KEY",
+        help="Require this bearer token on /generate (recommended when exposed).",
+    ),
+):
+    """Serve generation over HTTP so other machines can `imggen remote set` here.
+
+    Runs in the foreground until Ctrl-C. One generation runs at a time and the
+    last-used model is kept warm in memory between requests. Background it with
+    your own supervisor (systemd, tmux, `&`) as you like.
+    """
+    # Keep the last-used pipeline resident across requests (see common.py).
+    os.environ.setdefault("IMGGEN_PIPELINE_CACHE", "1")
+    from .server import serve as run_server
+
+    run_server(host, port, api_key)
+
+
+remote_app = typer.Typer(
+    help="Configure a remote imggen serve endpoint (set/show/status/clear).",
+    no_args_is_help=True,
+)
+app.add_typer(remote_app, name="remote")
+
+
+@remote_app.command("set")
+def remote_set(
+    endpoint: str = typer.Argument(..., help="HOST:PORT of an `imggen serve` daemon."),
+    api_key: Optional[str] = typer.Option(
+        None, "--api-key", envvar="IMGGEN_API_KEY",
+        help="Bearer token, if the server requires one.",
+    ),
+):
+    """Route generation to a remote imggen serve daemon (no local fallback)."""
+    from . import remote
+
+    path = remote.save(endpoint, api_key)
+    typer.secho(f"remote set: {endpoint}", fg=typer.colors.GREEN)
+    typer.secho(f"  saved to {path}", fg=typer.colors.BRIGHT_BLACK)
+    try:
+        info = remote.ping(timeout=5)
+    except remote.RemoteError as exc:
+        typer.secho(f"  warning: not reachable yet — {exc}", fg=typer.colors.YELLOW)
+        typer.secho(
+            "  generation will error until the server is up (there is no local fallback; "
+            "use --local to override per-run, or `imggen remote clear`).",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+        return
+    typer.secho(
+        f"  reachable — server device: {info.get('device', '?')} "
+        f"(imggen {info.get('version', '?')})",
+        fg=typer.colors.BLUE,
+    )
+
+
+@remote_app.command("show")
+def remote_show():
+    """Show the currently configured remote (if any)."""
+    from . import remote
+
+    cfg = remote.load()
+    if not cfg:
+        typer.secho("no remote configured — running locally", fg=typer.colors.BLUE)
+        return
+    typer.secho(f"remote: {cfg['endpoint']}", fg=typer.colors.GREEN)
+    if cfg.get("api_key"):
+        typer.echo("  api-key: set")
+
+
+@remote_app.command("status")
+def remote_status():
+    """Ping the configured remote and print its device/version."""
+    from . import remote
+
+    cfg = remote.load()
+    if not cfg:
+        typer.secho("no remote configured — running locally", fg=typer.colors.BLUE)
+        return
+    try:
+        info = remote.ping(timeout=5)
+    except remote.RemoteError as exc:
+        typer.secho(f"unreachable: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho(f"reachable: {cfg['endpoint']}", fg=typer.colors.GREEN)
+    typer.echo(f"  device:  {info.get('device', '?')}")
+    typer.echo(f"  version: imggen {info.get('version', '?')}")
+    typer.echo(f"  kinds:   {', '.join(info.get('kinds', []))}")
+
+
+@remote_app.command("clear")
+def remote_clear():
+    """Remove the configured remote and go back to local execution."""
+    from . import remote
+
+    if remote.clear():
+        typer.secho("remote cleared — running locally", fg=typer.colors.GREEN)
+    else:
+        typer.secho("no remote was configured", fg=typer.colors.BLUE)
 
 
 if __name__ == "__main__":

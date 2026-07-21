@@ -63,24 +63,26 @@ def _single_file_pipeline_cls(path: str, img2img: bool):
     return getattr(diffusers, mapping[1] if img2img else mapping[0])
 
 
-def _load(req: GenRequest, dtype, img2img: bool):
+def _build(resolved, dtype, token, img2img: bool):
     from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 
-    token = hf_token(req.hf_token)
-    resolved = resolve_model(req.kind, req.model, token)
     kwargs = dict(torch_dtype=dtype, token=token)
     if resolved.is_local and resolved.ref.endswith((".safetensors", ".ckpt")):
         cls = _single_file_pipeline_cls(resolved.ref, img2img)
-        return cls.from_single_file(resolved.ref, **kwargs), resolved
+        return cls.from_single_file(resolved.ref, **kwargs)
     cls = AutoPipelineForImage2Image if img2img else AutoPipelineForText2Image
-    return cls.from_pretrained(resolved.ref, **kwargs), resolved
+    return cls.from_pretrained(resolved.ref, **kwargs)
 
 
 def generate(req: GenRequest):
     device, dtype, seeds = common.prepare(req)
     img2img = req.init is not None
-    pipe, resolved = _load(req, dtype, img2img)
-    pipe = common.place(pipe, device, req.offload)
+    token = hf_token(req.hf_token)
+    resolved = resolve_model(req.kind, req.model, token)
+    key = ("sd", resolved.ref, img2img, str(dtype), device, bool(req.offload))
+    pipe = common.cached_pipeline(
+        key, lambda: common.place(_build(resolved, dtype, token, img2img), device, req.offload)
+    )
 
     d = resolved.defaults
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])
