@@ -225,12 +225,17 @@ def _gen_timeout() -> float | None:
     return None if val <= 0 else val
 
 
-def run(req: GenRequest):
+def run(req: GenRequest, on_progress=None):
     """Run ``req`` on the configured remote and return the backend result list.
 
     Returns the same shape as :func:`imggen.pipelines.run`:
     ``[(PIL.Image, metadata dict, path_hint), ...]``. Raises :class:`RemoteError`
     on any transport / auth / server failure — there is no local fallback.
+
+    ``on_progress(event)`` (optional) is called with each streamed progress /
+    status event so the caller can render a live bar; the request asks the server
+    to stream NDJSON. A server too old to stream returns a single JSON object,
+    which is handled transparently (no progress, same result).
     """
     cfg = _resolve_cfg(None, None)
 
@@ -239,19 +244,60 @@ def run(req: GenRequest):
     ping(timeout=5)
 
     payload = _encode_request(req)
+    payload["stream"] = True
     body = json.dumps(payload).encode()
     url = _base_url(cfg["endpoint"]) + "/generate"
     request = urllib.request.Request(url, data=body, headers=_headers(cfg), method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=_gen_timeout()) as resp:
-            data = json.loads(resp.read().decode())
+        resp = urllib.request.urlopen(request, timeout=_gen_timeout())
     except urllib.error.HTTPError as exc:
         raise RemoteError(
             f"remote generation failed ({exc.code}): {_http_error_detail(exc)}"
         ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise RemoteError(f"remote generation failed: {_explain(exc)}") from exc
+
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    try:
+        if "ndjson" in ctype:
+            data = _read_stream(resp, on_progress)
+        else:  # older server: one JSON object, no streaming
+            data = json.loads(resp.read().decode())
+    except RemoteError:
+        raise
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RemoteError(f"remote generation failed: {_explain(exc)}") from exc
+    finally:
+        resp.close()
     return _decode_results(req, data)
+
+
+def _read_stream(resp, on_progress) -> dict:
+    """Consume an NDJSON ``/generate`` stream, returning the final result object.
+
+    Progress / status events are forwarded to ``on_progress``; an ``error`` event
+    becomes a :class:`RemoteError`. Raises if the stream ends with no result.
+    """
+    final = None
+    for raw in resp:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            evt = json.loads(line.decode())
+        except ValueError:
+            continue
+        kind = evt.get("event")
+        if kind in ("progress", "status"):
+            if on_progress:
+                on_progress(evt)
+        elif kind == "error":
+            raise RemoteError(evt.get("error") or "remote generation failed")
+        elif kind == "result" or "results" in evt:
+            final = evt
+    if final is None:
+        raise RemoteError("remote stream ended without a result")
+    return final
 
 
 def _encode_request(req: GenRequest) -> dict:

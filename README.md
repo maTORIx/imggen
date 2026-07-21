@@ -101,6 +101,23 @@ preset.
 See [`src/imggen/settings/README.md`](src/imggen/settings/README.md) for the
 full manifest schema and more examples.
 
+### Prompt weighting (`(word:1.2)`)
+
+Emphasise or de-emphasise parts of a prompt with ComfyUI/A1111 syntax, on the
+`sd` backend (SD1.5 / SDXL / SD3.5) and `see-through --method layerdiffuse`:
+
+```bash
+imggen sd -p "a (red:1.3) fox, (blurry background:0.4), (masterpiece)"
+imggen sd -p "a fox" --negative "(worst quality:1.4), [watermark]"
+```
+
+- `(word:1.3)` scales attention by 1.3; `(word)` = 1.1, `[word]` = 1/1.1.
+  Escape literal brackets as `\(` `\)` `\[` `\]`.
+- It kicks in **only when the prompt contains an unescaped `(` or `[`** — plain
+  prompts are encoded exactly as before. Works in the negative prompt too.
+- **Qwen-Image / Qwen-Image-Edit** use an LLM text encoder with no standard
+  token weighting, so the markup is stripped (with a note) and the words kept.
+
 ### Transparent generation (LayerDiffuse)
 
 `see-through --method layerdiffuse` (the default when generating from a prompt)
@@ -143,6 +160,10 @@ Details:
   the host*; a client-only local path won't exist there. `imggen pull` and your
   presets live on the host. The last-used model is kept warm in memory between
   requests; one generation runs at a time.
+- **Live progress.** The client shows a per-step progress bar for remote runs
+  (the server streams step counts as it denoises), just as a local run shows
+  diffusers' own bar. Works with any current `imggen serve`; against an older
+  server it simply falls back to no bar.
 - No new dependencies (standard-library HTTP). `$IMGGEN_REMOTE` /
   `$IMGGEN_API_KEY` override the stored config; the endpoint is saved to
   `~/.config/imggen/remote.json`.

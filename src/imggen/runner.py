@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import typer
@@ -9,6 +10,46 @@ import typer
 from . import pipelines
 from .imageio import build_output_paths, save_image
 from .params import GenRequest
+
+
+def _progress_reporter():
+    """A terminal progress bar for remote generation (fed by streamed events).
+
+    Local runs show diffusers' own tqdm bar; a remote client sees nothing until
+    the daemon streams per-step progress, so we render one here. Returns a
+    callable ``report(event)`` with a ``.close()`` that finishes the line. Stays
+    silent when stderr is not a TTY (piped/redirected) to avoid log spam.
+    """
+    stream = sys.stderr
+    tty = stream.isatty()
+    state = {"active": False}
+
+    def report(evt: dict) -> None:
+        if evt.get("event") != "progress":
+            return
+        step, total = evt.get("step"), evt.get("total")
+        imgs, img = evt.get("images") or 1, (evt.get("image") or 0) + 1
+        if total:
+            frac = min(max(step / total, 0.0), 1.0)
+            filled = int(frac * 24)
+            label = f"step {step}/{total} [{'#' * filled}{'-' * (24 - filled)}] {int(frac * 100):3d}%"
+        else:
+            label = f"step {step}"
+        if imgs > 1:
+            label += f"  (image {img}/{imgs})"
+        if tty:
+            stream.write(f"\r  {label}\033[K")
+            stream.flush()
+            state["active"] = True
+
+    def close() -> None:
+        if state["active"]:
+            stream.write("\n")
+            stream.flush()
+            state["active"] = False
+
+    report.close = close
+    return report
 
 
 def run_and_save(
@@ -23,7 +64,11 @@ def run_and_save(
     if use_remote:
         from . import remote
 
-        results = remote.run(req)
+        reporter = _progress_reporter()
+        try:
+            results = remote.run(req, on_progress=reporter)
+        finally:
+            reporter.close()
     else:
         results = pipelines.run(req)
 

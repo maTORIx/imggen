@@ -12,9 +12,13 @@ only when actually serving — never on the light command / completion path.
 Endpoints:
 
 * ``GET  /health``   — liveness + device/version info (no auth; used to probe).
-* ``POST /generate`` — a JSON ``{request, init_image?, init_name?}`` body; runs
-  the backend and returns ``{results: [{image, meta, hint}, ...]}`` with each
-  image as a base64 PNG. Requires the bearer token when one is configured.
+* ``POST /generate`` — a JSON ``{request, init_image?, init_name?, stream?}``
+  body; runs the backend and returns ``{results: [{image, meta, hint}, ...]}``
+  with each image as a base64 PNG. Requires the bearer token when configured.
+  With ``stream: true`` the response is instead an NDJSON stream of per-step
+  ``{"event": "progress", ...}`` lines followed by a final ``{"event":
+  "result", "results": [...]}`` (or ``{"event": "error"}``) line, so a remote
+  client can render a live progress bar (see :mod:`imggen.remote`).
 """
 
 from __future__ import annotations
@@ -111,6 +115,12 @@ def _make_handler(api_key: str | None):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json(400, {"error": f"bad request: {exc}"})
                 return
+            if payload.get("stream"):
+                self._generate_stream(payload)
+            else:
+                self._generate_once(payload)
+
+        def _generate_once(self, payload: dict) -> None:
             try:
                 with _GEN_LOCK:
                     results = _run_payload(payload)
@@ -119,13 +129,42 @@ def _make_handler(api_key: str | None):
                 return
             self._send_json(200, {"results": results})
 
+        def _generate_stream(self, payload: dict) -> None:
+            """Run generation and stream NDJSON progress + a final result line.
+
+            Each line is one JSON object: ``{"event": "progress", step, total,
+            image, images}`` per denoising step, a ``{"event": "status"}`` when the
+            run actually starts (after any model load / lock wait), then either
+            ``{"event": "result", "results": [...]}`` or ``{"event": "error"}``.
+            HTTP/1.0 + connection-close framing: the client reads lines until EOF.
+            """
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+
+            def emit(obj: dict) -> None:
+                self.wfile.write((json.dumps(obj) + "\n").encode())
+                self.wfile.flush()
+
+            def on_step(img: int, imgs: int, step: int, total) -> None:
+                emit({"event": "progress", "image": img, "images": imgs,
+                      "step": step, "total": total})
+
+            try:
+                with _GEN_LOCK:
+                    emit({"event": "status", "stage": "running"})
+                    results = _run_payload(payload, on_step=on_step)
+                emit({"event": "result", "results": results})
+            except Exception as exc:
+                emit({"event": "error", "error": f"{type(exc).__name__}: {exc}"})
+
         def log_message(self, fmt: str, *args) -> None:  # to stdout, one line
             print(f"{self.address_string()} - {fmt % args}")
 
     return Handler
 
 
-def _run_payload(payload: dict) -> list[dict]:
+def _run_payload(payload: dict, on_step=None) -> list[dict]:
     from . import pipelines
 
     data = dict(payload.get("request") or {})
@@ -138,7 +177,7 @@ def _run_payload(payload: dict) -> list[dict]:
                 fh.write(base64.b64decode(payload["init_image"]))
             data["init"] = tmp_init
         req = _build_request(data)
-        results = pipelines.run(req)
+        results = pipelines.run(req, on_step=on_step)
         return [_encode_result(img, meta, hint) for img, meta, hint in results]
     finally:
         if tmp_init and os.path.exists(tmp_init):

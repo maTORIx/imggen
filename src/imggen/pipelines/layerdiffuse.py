@@ -56,7 +56,7 @@ def _build_pipeline(model_ref: str, token: str | None):
     return pipe
 
 
-def generate(req: GenRequest):
+def generate(req: GenRequest, on_step=None):
     if not req.prompt:
         raise ValueError("see-through --method layerdiffuse requires a --prompt")
 
@@ -73,22 +73,28 @@ def generate(req: GenRequest):
     steps = req.steps or DEFAULTS["steps"]
     cfg = req.cfg if req.cfg is not None else DEFAULTS["cfg"]
     prompt = common.compose_prompt(req.prompt, req.prompt_prefix, req.prompt_suffix)
+    negative = req.negative or ""
     common.set_scheduler(pipe, req.sampler)
     gens = common.generators(seeds, device)
 
+    kwargs = dict(
+        prompt=prompt,
+        negative_prompt=negative,
+        width=req.width or 1024,
+        height=req.height or 1024,
+        num_inference_steps=steps,
+        guidance_scale=cfg,
+        num_images_per_prompt=1,
+        return_dict=False,
+    )
+    # SDXL-based, so `(word:1.2)` weighting works here too.
+    common.apply_weighting(pipe, kwargs, prompt, negative)
+
     results = []
-    for seed, gen in zip(seeds, gens):
-        images = pipe(
-            prompt=prompt,
-            negative_prompt=req.negative or "",
-            width=req.width or 1024,
-            height=req.height or 1024,
-            num_inference_steps=steps,
-            guidance_scale=cfg,
-            num_images_per_prompt=1,
-            generator=gen,
-            return_dict=False,
-        )[0]
+    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+        call_kwargs = dict(kwargs)
+        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
+        images = pipe(generator=gen, **call_kwargs)[0]
         image = images[0].convert("RGBA")
         results.append(
             (

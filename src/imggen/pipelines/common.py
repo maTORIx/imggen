@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import torch
 import typer
@@ -172,3 +173,123 @@ def compose_prompt(prompt, prefix=None, suffix=None):
         if part:
             segments.append(part)
     return ", ".join(segments)
+
+
+# --- prompt weighting (ComfyUI / A1111 `(word:1.2)` emphasis) ------------
+# An *unescaped* opening bracket is the only way to introduce a weighted group,
+# so its presence is what flips a prompt onto the weighted-embedding path. Plain
+# prompts skip it entirely and stay bit-for-bit on the normal encoder path.
+_WEIGHT_OPEN = re.compile(r"(?<!\\)[(\[]")
+
+
+def has_weight_markup(text: str | None) -> bool:
+    """True if *text* uses ComfyUI/A1111 weighting markup — ``(w:1.2)``, ``(w)``, ``[w]``."""
+    return bool(text) and _WEIGHT_OPEN.search(text) is not None
+
+
+def strip_weight_markup(text: str | None) -> str | None:
+    """Return *text* with weighting markup removed, keeping the words.
+
+    ``(word:1.3)`` -> ``word``, ``[word]`` -> ``word``, ``\\(`` -> literal ``(``.
+    Used by backends whose text encoder is an LLM (Qwen), where token-level
+    weighting has no standard meaning: the markup is dropped and a note printed.
+    """
+    if not has_weight_markup(text):
+        return text
+    from ..vendor.sd_embed.prompt_parser import parse_prompt_attention
+
+    parts = [seg for seg, _w in parse_prompt_attention(text) if seg != "BREAK"]
+    return "".join(parts).strip()
+
+
+def weighted_embeddings(pipe, prompt: str | None, negative: str | None):
+    """Compute weighted prompt embeddings for a CLIP-based Stable Diffusion pipe.
+
+    Returns a kwargs dict to pass to the pipeline instead of ``prompt`` /
+    ``negative_prompt`` (``prompt_embeds`` + ``negative_prompt_embeds``, plus the
+    pooled variants for SDXL / SD3), or ``None`` if the pipeline family has no
+    supported weighting path (the caller then falls back to the plain prompt).
+
+    The embeddings are produced with the pipeline's own text encoders (via the
+    vendored ``sd_embed``), so device placement / CPU-offload hooks are honoured.
+    """
+    from ..vendor.sd_embed import embedding_funcs as ef
+
+    name = type(pipe).__name__
+    pos, neg = prompt or "", negative or ""
+    if "StableDiffusion3" in name:
+        pe, ne, pp, npp = ef.get_weighted_text_embeddings_sd3(pipe, pos, neg)
+        return dict(
+            prompt_embeds=pe, negative_prompt_embeds=ne,
+            pooled_prompt_embeds=pp, negative_pooled_prompt_embeds=npp,
+        )
+    if "StableDiffusionXL" in name:
+        pe, ne, pp, npp = ef.get_weighted_text_embeddings_sdxl(pipe, pos, neg)
+        return dict(
+            prompt_embeds=pe, negative_prompt_embeds=ne,
+            pooled_prompt_embeds=pp, negative_pooled_prompt_embeds=npp,
+        )
+    if name.startswith("StableDiffusion"):  # SD1.5 / SD2
+        pe, ne = ef.get_weighted_text_embeddings_sd15(pipe, pos, neg)
+        return dict(prompt_embeds=pe, negative_prompt_embeds=ne)
+    return None
+
+
+def apply_weighting(pipe, kwargs: dict, prompt: str | None, negative: str | None) -> bool:
+    """If *prompt*/*negative* use weighting markup, swap embeds into *kwargs*.
+
+    Mutates *kwargs* in place: drops ``prompt`` / ``negative_prompt`` and adds the
+    weighted embedding tensors. Returns ``True`` when weighting was applied. A
+    no-op (returns ``False``) for plain prompts or pipelines without a supported
+    weighting path — so callers keep the ordinary prompt kwargs untouched.
+    """
+    if not (has_weight_markup(prompt) or has_weight_markup(negative)):
+        return False
+    embeds = weighted_embeddings(pipe, prompt, negative)
+    if embeds is None:
+        return False
+    kwargs.pop("prompt", None)
+    kwargs.pop("negative_prompt", None)
+    kwargs.update(embeds)
+    return True
+
+
+# --- per-step progress (server -> remote client) -------------------------
+
+def _step_callback(on_step, img_index: int, num_images: int):
+    """Adapt ``on_step(img, imgs, step, total)`` to a diffusers step callback."""
+    state = {"total": None}
+
+    def _cb(pipe, step, timestep, cb_kwargs):
+        if state["total"] is None:
+            try:
+                state["total"] = len(pipe.scheduler.timesteps)
+            except Exception:
+                state["total"] = None
+        try:
+            on_step(img_index, num_images, step + 1, state["total"])
+        except Exception:
+            pass
+        return cb_kwargs
+
+    return _cb
+
+
+def attach_progress(kwargs: dict, pipe, on_step, img_index: int, num_images: int) -> None:
+    """Add a ``callback_on_step_end`` to *kwargs* (in place) when progress is wanted.
+
+    ``on_step(img_index, num_images, step, total)`` fires at the end of each
+    denoising step. No-op when *on_step* is ``None`` or the pipeline predates the
+    ``callback_on_step_end`` API. The server uses this to stream progress to a
+    remote client; local runs pass ``on_step=None`` and rely on diffusers' tqdm.
+    """
+    if on_step is None:
+        return
+    import inspect
+
+    try:
+        supported = "callback_on_step_end" in inspect.signature(pipe.__call__).parameters
+    except (TypeError, ValueError):
+        supported = False
+    if supported:
+        kwargs["callback_on_step_end"] = _step_callback(on_step, img_index, num_images)

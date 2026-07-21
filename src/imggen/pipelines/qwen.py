@@ -114,7 +114,25 @@ def _cache_key(kind: str, resolved: ResolvedModel, dtype, device: str, offload: 
     return (kind, resolved.ref, tag, str(dtype), device, bool(offload))
 
 
-def generate(req: GenRequest):
+def _strip_weights(prompt, negative):
+    """Drop ComfyUI/A1111 `(word:weight)` markup for the (LLM-encoder) Qwen path.
+
+    Token-level emphasis has no standard meaning for Qwen's Qwen2.5-VL text
+    encoder, so rather than feed the literal parentheses to the model we strip
+    the markup and warn (matching the documented no-weighting behaviour).
+    """
+    if common.has_weight_markup(prompt) or common.has_weight_markup(negative):
+        typer.secho(
+            "note: (word:weight) emphasis is unsupported for qwen (LLM text "
+            "encoder); generating without weights",
+            fg=typer.colors.YELLOW,
+        )
+        prompt = common.strip_weight_markup(prompt)
+        negative = common.strip_weight_markup(negative)
+    return prompt, negative
+
+
+def generate(req: GenRequest, on_step=None):
     from diffusers import QwenImagePipeline
 
     device, dtype, seeds = common.prepare(req)
@@ -135,6 +153,7 @@ def generate(req: GenRequest):
     prefix = common.setting(req.prompt_prefix, "prompt_prefix", d, None)
     suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
     prompt = common.compose_prompt(req.prompt, prefix, suffix)
+    prompt, negative = _strip_weights(prompt, negative)
     width = common.setting(req.width, "width", d, None)
     height = common.setting(req.height, "height", d, None)
     sampler = common.setting(req.sampler, "sampler", d, None)
@@ -154,8 +173,10 @@ def generate(req: GenRequest):
 
     model_meta = _model_meta(resolved)
     results = []
-    for seed, gen in zip(seeds, gens):
-        image = pipe(generator=gen, **kwargs).images[0]
+    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+        call_kwargs = dict(kwargs)
+        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
+        image = pipe(generator=gen, **call_kwargs).images[0]
         results.append(
             (
                 image,
@@ -176,7 +197,7 @@ def generate(req: GenRequest):
     return results
 
 
-def generate_edit(req: GenRequest):
+def generate_edit(req: GenRequest, on_step=None):
     from diffusers import QwenImageEditPlusPipeline
 
     if not req.init:
@@ -200,22 +221,26 @@ def generate_edit(req: GenRequest):
     prefix = common.setting(req.prompt_prefix, "prompt_prefix", d, None)
     suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
     prompt = common.compose_prompt(req.prompt, prefix, suffix)
+    prompt, negative = _strip_weights(prompt, negative)
     sampler = common.setting(req.sampler, "sampler", d, None)
     common.set_scheduler(pipe, sampler)
     init_image = common.load_init_image(req.init)
     gens = common.generators(seeds, device)
 
+    kwargs = dict(
+        image=init_image,
+        prompt=prompt,
+        negative_prompt=negative or " ",
+        num_inference_steps=steps,
+        true_cfg_scale=cfg,
+    )
+
     model_meta = _model_meta(resolved)
     results = []
-    for seed, gen in zip(seeds, gens):
-        image = pipe(
-            image=init_image,
-            prompt=prompt,
-            negative_prompt=negative or " ",
-            num_inference_steps=steps,
-            true_cfg_scale=cfg,
-            generator=gen,
-        ).images[0]
+    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+        call_kwargs = dict(kwargs)
+        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
+        image = pipe(generator=gen, **call_kwargs).images[0]
         results.append(
             (
                 image,

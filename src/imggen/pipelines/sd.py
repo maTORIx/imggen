@@ -74,7 +74,7 @@ def _build(resolved, dtype, token, img2img: bool):
     return cls.from_pretrained(resolved.ref, **kwargs)
 
 
-def generate(req: GenRequest):
+def generate(req: GenRequest, on_step=None):
     device, dtype, seeds = common.prepare(req)
     img2img = req.init is not None
     token = hf_token(req.hf_token)
@@ -104,6 +104,9 @@ def generate(req: GenRequest):
         num_inference_steps=steps,
         guidance_scale=cfg,
     )
+    # ComfyUI/A1111 `(word:1.2)` weighting: swap in weighted embeds when markup is
+    # present (SD1.5/SDXL/SD3.5). A no-op — kwargs keep prompt/negative — otherwise.
+    weighted = common.apply_weighting(pipe, kwargs, prompt, negative)
     if img2img:
         kwargs["image"] = common.load_init_image(req.init)
         kwargs["strength"] = strength
@@ -114,8 +117,10 @@ def generate(req: GenRequest):
             kwargs["height"] = height
 
     results = []
-    for seed, gen in zip(seeds, gens):
-        image = pipe(generator=gen, **kwargs).images[0]
+    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+        call_kwargs = dict(kwargs)
+        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
+        image = pipe(generator=gen, **call_kwargs).images[0]
         meta = {
             "kind": req.kind,
             "prompt": prompt,
@@ -128,6 +133,8 @@ def generate(req: GenRequest):
         }
         if sampler:
             meta["sampler"] = sampler
+        if weighted:
+            meta["weighted"] = True
         if img2img:
             meta["init"] = req.init
             meta["strength"] = strength

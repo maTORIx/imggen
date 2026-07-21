@@ -35,11 +35,11 @@ _MATTE_SIZE = 1024
 _BIREFNET_REPO = "ZhengPeng7/BiRefNet"
 
 
-def generate(req: GenRequest):
+def generate(req: GenRequest, on_step=None):
     method = _resolve_method(req)
     if method == "layerdiffuse":
-        return layerdiffuse.generate(req)
-    return _generate_matte(req)
+        return layerdiffuse.generate(req, on_step=on_step)
+    return _generate_matte(req, on_step=on_step)
 
 
 def _resolve_method(req: GenRequest) -> str:
@@ -64,9 +64,9 @@ def _resolve_method(req: GenRequest) -> str:
     return method
 
 
-def _generate_matte(req: GenRequest):
+def _generate_matte(req: GenRequest, on_step=None):
     device, _, _ = common.prepare(req)
-    bases = _base_images(req)
+    bases = _base_images(req, on_step=on_step)
     matte_model = _load_birefnet(device, req)
 
     results = []
@@ -84,15 +84,17 @@ def _generate_matte(req: GenRequest):
     return results
 
 
-def _base_images(req: GenRequest):
+def _base_images(req: GenRequest, on_step=None):
     """Return a list of ``(PIL.Image, metadata)`` base images."""
     if req.init:
         img = common.load_init_image(req.init)
         return [(img, {"prompt": req.prompt, "model": req.init, "seed": None})]
 
-    # Generate with the SD backend (see-through's default model is sdxl).
+    # Generate with the SD backend (see-through's default model is sdxl). This is
+    # the only step-based stage, so it carries the progress callback; matting is a
+    # single forward pass with nothing to report.
     sub = replace(req, kind="sd", mode="transparent")
-    return [(img, meta) for img, meta, _ in sd.generate(sub)]
+    return [(img, meta) for img, meta, _ in sd.generate(sub, on_step=on_step)]
 
 
 def _load_birefnet(device: str, req: GenRequest):
