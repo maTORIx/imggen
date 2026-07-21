@@ -121,12 +121,17 @@ def generate(req: GenRequest):
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])
     cfg = common.setting(req.cfg, "cfg", d, DEFAULTS["cfg"])
     negative = common.setting(req.negative, "negative", d, " ")
+    prefix = common.setting(req.prompt_prefix, "prompt_prefix", d, None)
+    suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
+    prompt = common.compose_prompt(req.prompt, prefix, suffix)
     width = common.setting(req.width, "width", d, None)
     height = common.setting(req.height, "height", d, None)
+    sampler = common.setting(req.sampler, "sampler", d, None)
+    common.set_scheduler(pipe, sampler)
     gens = common.generators(seeds, device)
 
     kwargs = dict(
-        prompt=req.prompt,
+        prompt=prompt,
         negative_prompt=negative or " ",
         num_inference_steps=steps,
         true_cfg_scale=cfg,
@@ -145,13 +150,14 @@ def generate(req: GenRequest):
                 image,
                 {
                     "kind": req.kind,
-                    "prompt": req.prompt,
+                    "prompt": prompt,
                     "negative": negative,
                     **model_meta,
                     "steps": steps,
                     "cfg": cfg,
                     "seed": seed,
                     "size": f"{image.width}x{image.height}",
+                    **({"sampler": sampler} if sampler else {}),
                 },
                 None,
             )
@@ -175,6 +181,11 @@ def generate_edit(req: GenRequest):
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])
     cfg = common.setting(req.cfg, "cfg", d, DEFAULTS["cfg"])
     negative = common.setting(req.negative, "negative", d, " ")
+    prefix = common.setting(req.prompt_prefix, "prompt_prefix", d, None)
+    suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
+    prompt = common.compose_prompt(req.prompt, prefix, suffix)
+    sampler = common.setting(req.sampler, "sampler", d, None)
+    common.set_scheduler(pipe, sampler)
     init_image = common.load_init_image(req.init)
     gens = common.generators(seeds, device)
 
@@ -183,7 +194,7 @@ def generate_edit(req: GenRequest):
     for seed, gen in zip(seeds, gens):
         image = pipe(
             image=init_image,
-            prompt=req.prompt,
+            prompt=prompt,
             negative_prompt=negative or " ",
             num_inference_steps=steps,
             true_cfg_scale=cfg,
@@ -194,7 +205,7 @@ def generate_edit(req: GenRequest):
                 image,
                 {
                     "kind": req.kind,
-                    "prompt": req.prompt,
+                    "prompt": prompt,
                     "negative": negative,
                     **model_meta,
                     "init": req.init,
@@ -202,6 +213,7 @@ def generate_edit(req: GenRequest):
                     "cfg": cfg,
                     "seed": seed,
                     "size": f"{image.width}x{image.height}",
+                    **({"sampler": sampler} if sampler else {}),
                 },
                 None,
             )

@@ -1,0 +1,15 @@
+{
+  "description": "Pony Diffusion V6 XL — versatile SDXL. Needs the score_* quality tags (baked into prompt_prefix) and is designed to need no negative prompt. SDXL's diffusers default already uses the penultimate CLIP layer, i.e. the required 'clip skip 2'.",
+  "source": {
+    "url": "https://civitai.red/api/download/models/290640?fileId=228616",
+    "filename": "pony-diffusion-v6-xl.safetensors"
+  },
+  "defaults": {
+    "steps": 25,
+    "cfg": 7.0,
+    "sampler": "euler_a",
+    "width": 1024,
+    "height": 1024,
+    "prompt_prefix": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up"
+  }
+}

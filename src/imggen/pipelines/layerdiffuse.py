@@ -72,12 +72,14 @@ def generate(req: GenRequest):
 
     steps = req.steps or DEFAULTS["steps"]
     cfg = req.cfg if req.cfg is not None else DEFAULTS["cfg"]
+    prompt = common.compose_prompt(req.prompt, req.prompt_prefix, req.prompt_suffix)
+    common.set_scheduler(pipe, req.sampler)
     gens = common.generators(seeds, device)
 
     results = []
     for seed, gen in zip(seeds, gens):
         images = pipe(
-            prompt=req.prompt,
+            prompt=prompt,
             negative_prompt=req.negative or "",
             width=req.width or 1024,
             height=req.height or 1024,
@@ -95,13 +97,14 @@ def generate(req: GenRequest):
                     "kind": req.kind,
                     "mode": "transparent",
                     "method": "layerdiffuse",
-                    "prompt": req.prompt,
+                    "prompt": prompt,
                     "negative": req.negative,
                     "model": resolved.ref,
                     "steps": steps,
                     "cfg": cfg,
                     "seed": seed,
                     "size": f"{image.width}x{image.height}",
+                    **({"sampler": req.sampler} if req.sampler else {}),
                 },
                 None,
             )

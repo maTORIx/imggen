@@ -1,8 +1,11 @@
-"""Model manifests: reproducible model definitions under ``./settings``.
+"""Model manifests: reproducible model definitions under the imggen config dir.
 
-A manifest is a small JSON file at ``settings/<kind>/<name>.json`` that records
-**where to get a model** and **its default generation settings**, so the same
-committed ``settings/`` directory reproduces a model on another machine.
+A manifest is a small JSON file at ``<config>/settings/<kind>/<name>.json``
+(``<config>`` = ``~/.config/imggen`` by default) that records **where to get a
+model** and **its default generation settings**. It is the single source of
+truth for models: the package-bundled built-ins are copied there once on first
+use (see :func:`ensure_seeded`), and ``imggen <kind> --save --alias <name>``
+writes new presets there too.
 
 The directory ``<kind>`` (``sd`` | ``qwen-image`` | ``qwen-image-edit``) is
 authoritative; ``<name>`` (the file stem) becomes the ``--model`` value.
@@ -46,21 +49,78 @@ from pathlib import Path
 KINDS = ("sd", "qwen-image", "qwen-image-edit")
 
 
-def settings_dirs() -> list[Path]:
-    """Manifest search roots, highest precedence first.
+def config_home() -> Path:
+    """The imggen config directory (``$IMGGEN_HOME`` / ``$XDG_CONFIG_HOME`` aware).
 
-    ``./settings`` (relative to the cwd) lets a project add or override models;
-    the package-bundled ``settings/`` ships the built-in models so they are
-    always available regardless of the working directory.
+    Defaults to ``~/.config/imggen``. ``$IMGGEN_HOME`` overrides it wholesale
+    (useful for a project-local set of presets); otherwise ``$XDG_CONFIG_HOME``
+    is honoured.
     """
-    return [Path("settings"), Path(__file__).parent / "settings"]
+    root = os.environ.get("IMGGEN_HOME")
+    if root:
+        return Path(root)
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "imggen"
 
 
-def cache_dir() -> Path:
-    """Where URL-downloaded weights are stored (``$IMGGEN_CACHE`` overrides)."""
+def user_settings_dir() -> Path:
+    """The single manifest root: ``<config_home>/settings``."""
+    return config_home() / "settings"
+
+
+def _bundled_settings_dir() -> Path:
+    """The built-in presets shipped inside the package (the seed source)."""
+    return Path(__file__).parent / "settings"
+
+
+def seed_settings(force: bool = False) -> list[Path]:
+    """Copy the package-bundled built-in presets into :func:`user_settings_dir`.
+
+    Existing files are left untouched unless ``force`` is set, so a user's own
+    edits and presets are never clobbered. Returns the list of files written.
+    """
+    src = _bundled_settings_dir()
+    dst = user_settings_dir()
+    copied: list[Path] = []
+    if not src.is_dir():
+        return copied
+    for jf in sorted(src.rglob("*.json")):
+        target = dst / jf.relative_to(src)
+        if target.exists() and not force:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(jf.read_text())
+        copied.append(target)
+    return copied
+
+
+def ensure_seeded() -> None:
+    """Seed the built-in presets on first use (when the root does not exist)."""
+    if not user_settings_dir().exists():
+        seed_settings(force=False)
+
+
+def settings_dirs() -> list[Path]:
+    """The manifest search roots (a single, user-owned directory).
+
+    Seeding runs lazily so the built-in models are always available even on a
+    fresh machine.
+    """
+    ensure_seeded()
+    return [user_settings_dir()]
+
+
+def cache_dir(kind: str | None = None) -> Path:
+    """Where URL-downloaded weights are stored (``$IMGGEN_CACHE`` overrides).
+
+    Plain-URL downloads are namespaced by ``kind`` so each backend keeps its
+    checkpoints separate: ``~/.cache/imggen/models/<kind>/``.
+    """
     root = os.environ.get("IMGGEN_CACHE")
     base = Path(root) if root else Path.home() / ".cache" / "imggen"
-    return base / "models"
+    models = base / "models"
+    return models / kind if kind else models
 
 
 @dataclass
@@ -128,12 +188,9 @@ def load_manifest(kind: str, name: str | None) -> ModelManifest | None:
 
 
 def list_manifests() -> dict[str, list[ModelManifest]]:
-    """All discoverable manifests, grouped by kind.
-
-    A ``./settings`` entry overrides a bundled one with the same kind/name.
-    """
+    """All discoverable manifests, grouped by kind."""
     seen: dict[tuple[str, str], ModelManifest] = {}
-    for root in settings_dirs():  # highest precedence first
+    for root in settings_dirs():
         if not root.is_dir():
             continue
         for kind_dir in sorted(root.iterdir()):
@@ -223,7 +280,7 @@ def materialize(manifest: ModelManifest, token: str | None = None) -> Materializ
             )
             return Materialized(ref=local, is_repo=False)
         # Plain URL (Civitai etc.)
-        local = _download_url(s.url, s.filename, s.token_env, s.sha256)
+        local = _download_url(s.url, s.filename, s.token_env, s.sha256, manifest.kind)
         return Materialized(ref=local, is_repo=False)
 
     if s.hf_repo and s.hf_file:
@@ -238,19 +295,24 @@ def materialize(manifest: ModelManifest, token: str | None = None) -> Materializ
 
 
 def _download_url(
-    url: str, filename: str | None, token_env: str | None, sha256: str | None
+    url: str,
+    filename: str | None,
+    token_env: str | None,
+    sha256: str | None,
+    kind: str | None = None,
 ) -> str:
     """Download ``url`` into the imggen cache with ``wget``; skip if already valid.
 
     ``wget`` (assumed present) gives resumable transfers (``-c``) and a progress
     bar for free; a ``token_env`` becomes an ``Authorization: Bearer`` header for
-    private/gated hosts such as Civitai.
+    private/gated hosts such as Civitai. The file lands under the ``kind``'s
+    cache subdirectory (see :func:`cache_dir`).
     """
     import shutil
     import subprocess
 
     name = filename or os.path.basename(url.split("?", 1)[0]) or "model.bin"
-    dest = cache_dir() / name
+    dest = cache_dir(kind) / name
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if dest.is_file() and (sha256 is None or _sha256(dest) == sha256.lower()):

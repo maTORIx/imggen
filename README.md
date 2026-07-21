@@ -15,10 +15,11 @@ Backends (`kind`):
 | `qwen-image-edit` | Qwen-Image-Edit (2509) — instruction editing of an image | `qwen-image-edit` (GGUF Q4) |
 | `see-through`     | transparent PNG generation and layer decomposition       | `sdxl` + LayerDiffuse |
 
-Every model is described by a **manifest** (`settings/<kind>/<name>.json`).
-Built-in models ship bundled with the package; add or override models with your
-own `./settings` directory. `imggen models` lists them; `--model` also accepts a
-raw Hugging Face repo id or a local path. Weights are downloaded on first use.
+Every model is described by a **preset** — a JSON manifest at
+`~/.config/imggen/settings/<kind>/<name>.json`. Built-in models are seeded there
+on first use; create your own from the command line with `--save --alias NAME`.
+`imggen models` lists them; `--model` also accepts a raw Hugging Face repo id or
+a local path. Weights are downloaded on first use.
 
 ### Quantized Qwen models (GGUF)
 
@@ -33,37 +34,48 @@ imggen qwen-image -p "..."                      # GGUF Q4_K_M (default)
 imggen qwen-image -p "..." -m qwen-image-fp16   # full unquantized weights
 ```
 
-To use a different quant level, add a manifest pointing at the desired `.gguf`
-file (see below) — e.g. `settings/qwen-image/qwen-image-q8.json` with
-`"hf_file": "Qwen_Image-Q8_0.gguf"`.
+To use a different quant level, save a preset pointing at the desired `.gguf`
+file — e.g. `imggen qwen-image -m <Q8 resolve URL> --steps 40 --save --alias qwen-q8`.
 
-### Model definitions (`settings/`)
+### Model presets (`~/.config/imggen/settings/`)
 
 Models are registered once in a JSON manifest that records the download source
 **and** the preferred settings, so the same definition reproduces on another
-machine. This is how the built-ins are defined (bundled with the package) and
-how you add your own — e.g. a Qwen-Image-Edit all-in-one checkpoint or a Civitai
-SDXL fine-tune. Manifests are discovered in this order (first wins):
-
-1. `./settings/<kind>/<name>.json` — your project's models (commit for reproducibility)
-2. the package-bundled `settings/` — the built-in models
+machine. All presets live in a single directory —
+`~/.config/imggen/settings/<kind>/<name>.json` (override the root with
+`$IMGGEN_HOME` / `$XDG_CONFIG_HOME`). The built-in models are copied there on
+first use; run `imggen init` to re-seed them.
 
 `<kind>` is a backend (`sd`, `qwen-image`, `qwen-image-edit`) and `<name>`
-becomes the `--model` value. Only `source` is required:
+becomes the `--model` value.
+
+**Create a preset from the CLI** — run a command with the options you want plus
+`--save --alias NAME`. It writes the preset instead of generating:
+
+```bash
+# an 8-step Euler SDXL preset, then recall it by name
+imggen sd -m stabilityai/stable-diffusion-xl-base-1.0 \
+          --steps 8 --cfg 2.0 --sampler euler --save --alias sdxl-fast
+imggen sd -m sdxl-fast -p "a red fox"        # applies steps=8, cfg=2.0, sampler=euler
+
+# derive from an existing preset (inherits its source + defaults, overlays your flags)
+imggen qwen-image -m qwen-image --steps 8 --save --alias qwen-fast
+
+# an explicit CLI flag always overrides a preset's default
+imggen qwen-image-edit -m qwen-rapid-aio-v23 -i photo.png -p "..." --steps 8
+```
+
+Only the flags you explicitly type are recorded (as `defaults`); the `--model`
+source is inferred from a preset name (inherited), an `http(s)://` URL, or an
+`org/repo` id. A hand-written preset needs only `source`:
 
 ```jsonc
-// settings/qwen-image-edit/qwen-rapid-aio-v23.json
+// ~/.config/imggen/settings/qwen-image-edit/qwen-rapid-aio-v23.json
 {
   "description": "Phr00t Qwen-Image-Edit Rapid AIO SFW v23 (distilled, ~4-step)",
   "source": { "url": "https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/resolve/main/v23/Qwen-Rapid-AIO-SFW-v23.safetensors" },
   "defaults": { "steps": 4, "cfg": 1.0, "negative": " " }
 }
-```
-
-```bash
-imggen qwen-image-edit -m qwen-rapid-aio-v23 -i photo.png -p "make it snow"
-# downloads the checkpoint on first use; applies steps=4 / cfg=1.0 automatically
-imggen qwen-image-edit -m qwen-rapid-aio-v23 -i photo.png -p "..." --steps 8   # flag overrides the default
 ```
 
 `source` is one of:
@@ -81,12 +93,13 @@ For `qwen-image` / `qwen-image-edit`, a single-file source (`.safetensors` or
 `.gguf`, auto-detected) is loaded as the transformer while the text encoder, VAE
 and scheduler come from the base repo (`Qwen/Qwen-Image` /
 `Qwen/Qwen-Image-Edit-2509`); override with `"load": { "base_repo": "..." }`.
-`defaults` accepts `steps`, `cfg`, `width`, `height`, `negative`; an explicit
-CLI flag always wins. Add `"gated": true` for repos that need an accepted
-license / HF token. `imggen models` lists every discovered manifest.
+`defaults` accepts `steps`, `cfg`, `width`, `height`, `negative`, `strength`,
+`sampler`; an explicit CLI flag always wins. Add `"gated": true` for repos that
+need an accepted license / HF token. `imggen models` lists every discovered
+preset.
 
-See [`settings/README.md`](settings/README.md) for the full manifest schema and
-more examples.
+See [`src/imggen/settings/README.md`](src/imggen/settings/README.md) for the
+full manifest schema and more examples.
 
 ### Transparent generation (LayerDiffuse)
 
@@ -165,6 +178,7 @@ List aliases: `imggen models`.
 | `-W, --width` / `-H, --height` | size in px |
 | `-s, --steps` | inference steps |
 | `-g, --cfg` | guidance / true-CFG scale |
+| `--sampler` | scheduler: `euler`, `dpm_2`, `dpm++_2m[_sde]`, `dpm++_3m_sde`, `unipc`, `deis`, `ddim`, `lcm`, `tcd`, `flowmatch`, plus `_karras`/`_exponential`/`_beta` variants (`imggen samplers`) |
 | `--seed` | base seed (consecutive across a batch) |
 | `-n, --num` | number of images |
 | `-i, --init` | input image (img2img / edit / see-through base) |
@@ -173,6 +187,10 @@ List aliases: `imggen models`.
 | `--offload` | CPU-offload to save VRAM |
 | `--hf-token` | token for gated models (or set `HF_TOKEN`) |
 | `--no-metadata` | do not embed parameters in the PNG |
+| `--save --alias NAME` | save these options as a reusable preset (no generation) |
+
+Utility commands: `imggen models` (list presets), `imggen samplers` (list
+sampler names), `imggen init` (re-seed the built-in presets).
 
 ## Gated models
 

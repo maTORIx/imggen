@@ -37,19 +37,25 @@ def generate(req: GenRequest):
     steps = common.setting(req.steps, "steps", d, DEFAULTS["steps"])
     cfg = common.setting(req.cfg, "cfg", d, DEFAULTS["cfg"])
     negative = common.setting(req.negative, "negative", d, None)
+    prefix = common.setting(req.prompt_prefix, "prompt_prefix", d, None)
+    suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
+    prompt = common.compose_prompt(req.prompt, prefix, suffix)
     width = common.setting(req.width, "width", d, None)
     height = common.setting(req.height, "height", d, None)
+    strength = common.setting(req.strength, "strength", d, 0.8)
+    sampler = common.setting(req.sampler, "sampler", d, None)
+    common.set_scheduler(pipe, sampler)
     gens = common.generators(seeds, device)
 
     kwargs = dict(
-        prompt=req.prompt,
+        prompt=prompt,
         negative_prompt=negative,
         num_inference_steps=steps,
         guidance_scale=cfg,
     )
     if img2img:
         kwargs["image"] = common.load_init_image(req.init)
-        kwargs["strength"] = req.strength
+        kwargs["strength"] = strength
     else:
         if width:
             kwargs["width"] = width
@@ -61,7 +67,7 @@ def generate(req: GenRequest):
         image = pipe(generator=gen, **kwargs).images[0]
         meta = {
             "kind": req.kind,
-            "prompt": req.prompt,
+            "prompt": prompt,
             "negative": negative,
             "model": resolved.ref,
             "steps": steps,
@@ -69,8 +75,10 @@ def generate(req: GenRequest):
             "seed": seed,
             "size": f"{image.width}x{image.height}",
         }
+        if sampler:
+            meta["sampler"] = sampler
         if img2img:
             meta["init"] = req.init
-            meta["strength"] = req.strength
+            meta["strength"] = strength
         results.append((image, meta, None))
     return results

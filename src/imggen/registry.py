@@ -1,12 +1,12 @@
 """Model resolution for ``--model``.
 
-Every model is described by a **manifest** — a JSON file under ``settings/``
-(see :mod:`imggen.manifest`). Built-in models ship as bundled manifests inside
-the package; a project can add or override models with its own ``./settings``
-directory. ``--model`` accepts these forms:
+Every model is described by a **manifest** — a JSON file under
+``~/.config/imggen/settings/`` (see :mod:`imggen.manifest`). Built-in models are
+seeded there on first use; ``imggen <kind> --save --alias`` adds new ones.
+``--model`` accepts these forms:
 
 * a **manifest name** (``sdxl``, ``qwen-image``, ``qwen-image-edit``,
-  ``sd3.5`` ...) -> resolved from ``settings/<kind>/<name>.json``
+  ``sd3.5`` ...) -> resolved from ``<config>/settings/<kind>/<name>.json``
 * a **Hugging Face repo id** (``stabilityai/stable-diffusion-xl-base-1.0``)
 * a **local path** to a diffusers folder or single-file checkpoint
 
@@ -77,7 +77,7 @@ def resolve_model(
     if os.path.exists(arg):
         return ResolvedModel(ref=os.path.abspath(arg), is_local=True, is_gated=False)
 
-    # A manifest (bundled, or overridden by ./settings/<kind>/<arg>.json).
+    # A manifest at <config>/settings/<kind>/<arg>.json.
     resolved = _resolve_manifest(kind, arg, token)
     if resolved is not None:
         return resolved

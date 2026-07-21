@@ -10,13 +10,16 @@ class GenRequest:
     kind: str
     prompt: str | None = None
     negative: str | None = None
+    prompt_prefix: str | None = None  # positive-prompt template prepended to prompt
+    prompt_suffix: str | None = None  # positive-prompt template appended to prompt
     model: str | None = None
 
     width: int | None = None
     height: int | None = None
     steps: int | None = None
     cfg: float | None = None
-    strength: float = 0.8  # img2img / edit denoising strength
+    strength: float | None = None  # img2img / edit denoising strength (default 0.8)
+    sampler: str | None = None  # scheduler alias, e.g. euler / ddim / flowmatch
 
     seed: int | None = None
     num: int = 1

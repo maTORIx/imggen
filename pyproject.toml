@@ -25,6 +25,8 @@ dependencies = [
     "huggingface-hub>=0.26",
     "gguf>=0.19.0",    # load GGUF-quantized Qwen transformers
     "peft>=0.19.1",    # LoRA loading for LayerDiffuse (see-through)
+    "scipy",           # --sampler: LMSDiscrete + *_beta sigma schedules
+    "torchsde",        # --sampler: DPM++ SDE (DPMSolverSDEScheduler)
 ]
 
 [project.scripts]
