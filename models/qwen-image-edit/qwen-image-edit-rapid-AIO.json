@@ -1,5 +1,5 @@
 {
-  "description": "Phr00t Qwen-Image-Edit Rapid AIO NSFW v23 — distilled all-in-one Qwen-Image-Edit checkpoint. README recommends ~4-8 steps at CFG 1; the AIO file bundles the transformer, VAE and text encoder.",
+  "description": "Qwen-Image-Edit Rapid AIO NSFW v23 (Phr00t) — distilled all-in-one edit checkpoint, ~4 steps at CFG 1.",
   "source": {
     "url": "https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/resolve/main/v23/Qwen-Rapid-AIO-NSFW-v23.safetensors?download=true"
   },

@@ -1,5 +1,5 @@
 {
-  "description": "WAI-illustrious-SDXL v17 — anime/illustration SDXL (Illustrious base). VAE is baked in. SDXL's diffusers default already uses the penultimate CLIP layer, i.e. the recommended 'clip skip 2'.",
+  "description": "WAI-illustrious-SDXL v17 — anime/illustration SDXL (Illustrious base), VAE baked in. Euler a, ~28 steps, CFG 6.",
   "source": {
     "url": "https://civitai.red/api/download/models/2883731?fileId=2763986",
     "filename": "wai-illustrious-sdxl-v17.safetensors"

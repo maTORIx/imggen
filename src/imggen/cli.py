@@ -327,16 +327,54 @@ def _pull_list(catalog, kinds, kind: str | None) -> None:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    typer.secho(f"Catalog ({catalog.source_desc()}):", bold=True)
+    source = catalog.source_desc()
     if not found:
+        typer.secho(f"Catalog · {source}", bold=True)
         typer.secho("  (no presets found)", fg=typer.colors.YELLOW)
+        return
+    _render_catalog(source, found)
+
+
+def _render_catalog(source: str, found: dict) -> None:
+    """Print the catalog as aligned, wrapping columns (rich, with a plain fallback)."""
+    try:
+        from rich.console import Console
+        from rich.padding import Padding
+        from rich.table import Table
+    except ImportError:
+        return _render_catalog_plain(source, found)
+
+    console = Console()
+    console.print(f"[bold]Catalog[/]  [dim]{source}[/]")
     for k, items in found.items():
-        typer.secho(f"  {k}:", fg=typer.colors.CYAN)
+        console.print(f"\n[bold cyan]{k}[/]")
+        table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 3, 0, 0))
+        table.add_column(style="green", no_wrap=True)     # preset name
+        table.add_column(style="dim", overflow="fold")    # description (wraps)
         for name, desc in items:
-            note = f"  — {desc}" if desc else ""
-            typer.echo(f"    {name:26s}{note}")
+            table.add_row(name, desc or "—")
+        console.print(Padding(table, (0, 0, 0, 4)))
+    console.print("\n[dim]Install (downloads weights):[/]  imggen pull <kind> <name>")
+
+
+def _render_catalog_plain(source: str, found: dict) -> None:
+    import shutil
+    import textwrap
+
+    width = max(48, shutil.get_terminal_size((80, 20)).columns)
+    typer.secho(f"Catalog  {source}", bold=True)
+    namew = max((len(n) for items in found.values() for n, _ in items), default=0)
+    for k, items in found.items():
+        typer.secho(f"\n{k}", fg=typer.colors.CYAN, bold=True)
+        for name, desc in items:
+            prefix = f"    {name.ljust(namew)}   "
+            hang = " " * len(prefix)
+            typer.echo(
+                textwrap.fill(desc, width=width, initial_indent=prefix, subsequent_indent=hang)
+                if desc else prefix.rstrip()
+            )
     typer.secho(
-        "\nInstall (downloads weights): imggen pull <kind> <name>",
+        "\nInstall (downloads weights):  imggen pull <kind> <name>",
         fg=typer.colors.BRIGHT_BLACK,
     )
 
