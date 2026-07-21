@@ -25,8 +25,48 @@ from .runner import echo_saved, run_and_save
 app = typer.Typer(
     help="Command-line image generation with automatic model download.",
     no_args_is_help=True,
-    add_completion=False,
+    add_completion=True,  # enables `imggen --install-completion` for the shell
 )
+
+
+# --- shell completion callbacks -----------------------------------------
+# Typer classifies a completer's params by type: ``typer.Context`` -> ctx,
+# ``str`` -> the incomplete word. Keep these fast (no torch, short timeouts):
+# they run on every <TAB>.
+
+def _complete_kind(incomplete: str):
+    from .manifest import KINDS
+
+    return [k for k in KINDS if k.startswith(incomplete)]
+
+
+def _complete_sampler(incomplete: str):
+    return [n for n in schedulers.NAMES if n.startswith(incomplete)]
+
+
+def _complete_model(ctx: typer.Context, incomplete: str):
+    """Complete --model with the presets installed for this command's kind."""
+    from .manifest import list_manifests
+
+    cmd = getattr(ctx.command, "name", None) or ""
+    kind = "sd" if cmd == "see-through" else cmd
+    try:
+        mans = list_manifests().get(kind, [])
+    except Exception:
+        return []
+    return [m.name for m in mans if m.name.startswith(incomplete)]
+
+
+def _complete_catalog_alias(ctx: typer.Context, incomplete: str):
+    """Complete the pull alias with catalog names for the already-typed kind."""
+    from . import catalog
+    from .manifest import KINDS
+
+    kind = ctx.params.get("kind")
+    if kind not in KINDS:
+        return []
+    return [n for n in catalog.list_names(kind, timeout=4) if n.startswith(incomplete)]
+
 
 # --- reusable option definitions ----------------------------------------
 PromptOpt = typer.Option(None, "--prompt", "-p", help="Text/instruction prompt.")
@@ -39,7 +79,10 @@ PromptPrefix = typer.Option(
 PromptSuffix = typer.Option(
     None, "--prompt-suffix", help="Positive-prompt template appended to --prompt.",
 )
-Model = typer.Option(None, "--model", "-m", help="Alias, HF repo id, or local path.")
+Model = typer.Option(
+    None, "--model", "-m", help="Alias, HF repo id, or local path.",
+    autocompletion=_complete_model,
+)
 Out = typer.Option(None, "--out", "-o", help="Output file, directory, or {seed}/{i} template.")
 Width = typer.Option(None, "--width", "-W", help="Image width (px).")
 Height = typer.Option(None, "--height", "-H", help="Image height (px).")
@@ -52,6 +95,7 @@ Sampler = typer.Option(
          "ipndm, lms, lcm, tcd, flowmatch — plus _karras/_exponential/_beta "
          "sigma variants (see `imggen samplers`). Classic samplers are for "
          "SD1.5/SDXL; Qwen-Image & SD3.5 are flow-matching (use flowmatch).",
+    autocompletion=_complete_sampler,
 )
 Seed = typer.Option(None, "--seed", help="Base seed (consecutive across a batch).")
 Num = typer.Option(1, "--num", "-n", min=1, help="Number of images.")
@@ -458,8 +502,14 @@ def _pull_install(catalog, kind: str, alias: str, force: bool, hf_token_arg) -> 
 
 @app.command()
 def pull(
-    kind: Optional[str] = typer.Argument(None, help="Model kind: sd | qwen-image | qwen-image-edit."),
-    alias: Optional[str] = typer.Argument(None, help="Catalog preset name to install (see --list)."),
+    kind: Optional[str] = typer.Argument(
+        None, help="Model kind: sd | qwen-image | qwen-image-edit.",
+        autocompletion=_complete_kind,
+    ),
+    alias: Optional[str] = typer.Argument(
+        None, help="Catalog preset name to install (see --list).",
+        autocompletion=_complete_catalog_alias,
+    ),
     list_models: bool = typer.Option(False, "--list", help="List catalog presets instead of installing."),
     force: bool = typer.Option(False, "--force", help="Overwrite an already-installed preset of the same name."),
     hf_token: Optional[str] = HfToken,

@@ -1,14 +1,19 @@
-"""Device and dtype selection."""
+"""Device and dtype selection.
+
+``torch`` is imported lazily inside each function (not at module load) so that
+the lightweight commands — ``version``, ``models``, ``pull``, ``samplers`` and
+shell completion — stay fast and don't pay torch's ~0.6s import cost.
+"""
 
 from __future__ import annotations
-
-import torch
 
 
 def resolve_device(pref: str | None = None) -> str:
     """Pick a device, preferring CUDA > MPS > CPU unless ``pref`` is given."""
     if pref:
         return pref
+    import torch
+
     if torch.cuda.is_available():
         return "cuda"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -16,8 +21,10 @@ def resolve_device(pref: str | None = None) -> str:
     return "cpu"
 
 
-def resolve_dtype(device: str, pref: str | None = None) -> torch.dtype:
+def resolve_dtype(device: str, pref: str | None = None) -> "torch.dtype":
     """Pick a compute dtype appropriate for the device."""
+    import torch
+
     if pref:
         return {
             "float32": torch.float32,
@@ -36,6 +43,8 @@ def resolve_dtype(device: str, pref: str | None = None) -> torch.dtype:
 
 
 def describe() -> str:
+    import torch
+
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name(0)
         cap = torch.cuda.get_device_capability(0)

@@ -135,6 +135,17 @@ uv sync
 uv run imggen version
 ```
 
+### Shell completion
+
+```bash
+imggen --install-completion    # then restart your shell (bash/zsh/fish)
+```
+
+Once installed, <kbd>Tab</kbd> completes subcommands and, where it helps, their
+values: `imggen pull <Tab>` → kinds, `imggen pull sd <Tab>` → catalog preset
+names, `imggen sd -m <Tab>` → installed presets, and `--sampler <Tab>` → sampler
+aliases.
+
 ## Examples
 
 ```bash

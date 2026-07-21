@@ -66,13 +66,13 @@ def _contents_url(kind: str) -> str:
     return f"https://api.github.com/repos/{_repo()}/contents/{_SUBDIR}/{kind}?ref={_ref()}"
 
 
-def _get(url: str, accept: str | None = None) -> bytes:
+def _get(url: str, accept: str | None = None, timeout: float = 30) -> bytes:
     headers = {"User-Agent": _UA}
     if accept:
         headers["Accept"] = accept
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.HTTPError:
         raise  # caller distinguishes 404 from other statuses
@@ -141,6 +141,29 @@ def list_kind(kind: str) -> list[tuple[str, str | None]]:
                 desc = None
         out.append((stem, desc))
     return out
+
+
+def list_names(kind: str, timeout: float = 30) -> list[str]:
+    """Just the preset names published under ``kind`` — one request, for tab completion.
+
+    Unlike :func:`list_kind` this never fetches descriptions, and it swallows all
+    errors (returning ``[]``) so completion stays fast and never raises into the
+    shell. Pass a short ``timeout`` when driving interactive completion.
+    """
+    d = local_dir()
+    if d is not None:
+        kdir = d / kind
+        return sorted(p.stem for p in kdir.glob("*.json")) if kdir.is_dir() else []
+    try:
+        raw = _get(_contents_url(kind), accept="application/vnd.github+json", timeout=timeout)
+        entries = json.loads(raw)
+    except Exception:
+        return []
+    return sorted(
+        entry["name"][: -len(".json")]
+        for entry in entries
+        if entry.get("type") == "file" and entry.get("name", "").endswith(".json")
+    )
 
 
 def list_all(kinds) -> dict[str, list[tuple[str, str | None]]]:
