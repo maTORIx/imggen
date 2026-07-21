@@ -1,0 +1,14 @@
+{
+  "description": "Phr00t Qwen-Image-Edit Rapid AIO SFW v23 (distilled all-in-one, ~4-step)",
+  "source": {
+    "url": "https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/resolve/main/v23/Qwen-Rapid-AIO-SFW-v23.safetensors"
+  },
+  "load": {
+    "base_repo": "Qwen/Qwen-Image-Edit-2509"
+  },
+  "defaults": {
+    "steps": 4,
+    "cfg": 1.0,
+    "negative": " "
+  }
+}

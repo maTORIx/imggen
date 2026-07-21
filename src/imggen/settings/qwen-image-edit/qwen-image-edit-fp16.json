@@ -1,0 +1,5 @@
+{
+  "description": "Qwen-Image-Edit 2509 — full (unquantized) weights",
+  "source": { "hf_repo": "Qwen/Qwen-Image-Edit-2509" },
+  "defaults": { "steps": 50, "cfg": 4.0 }
+}

@@ -1,0 +1,35 @@
+"""Shared request parameters passed from the CLI to the pipelines."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class GenRequest:
+    kind: str
+    prompt: str | None = None
+    negative: str | None = None
+    model: str | None = None
+
+    width: int | None = None
+    height: int | None = None
+    steps: int | None = None
+    cfg: float | None = None
+    strength: float = 0.8  # img2img / edit denoising strength
+
+    seed: int | None = None
+    num: int = 1
+
+    init: str | None = None  # input image path (img2img / edit / see-through)
+
+    # see-through specific
+    mode: str = "transparent"  # "transparent" | "layers"
+    method: str = "auto"  # "auto" | "layerdiffuse" | "matte"
+
+    device: str | None = None
+    dtype: str | None = None
+    offload: bool = False
+    hf_token: str | None = None
+
+    extra: dict = field(default_factory=dict)

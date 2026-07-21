@@ -1,0 +1,5 @@
+{
+  "description": "Stable Diffusion v1.5",
+  "source": { "hf_repo": "stable-diffusion-v1-5/stable-diffusion-v1-5" },
+  "defaults": { "steps": 30, "cfg": 7.0 }
+}

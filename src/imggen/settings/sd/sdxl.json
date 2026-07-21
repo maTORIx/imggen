@@ -1,0 +1,5 @@
+{
+  "description": "Stable Diffusion XL base 1.0 (default `sd` model)",
+  "source": { "hf_repo": "stabilityai/stable-diffusion-xl-base-1.0" },
+  "defaults": { "steps": 30, "cfg": 7.0 }
+}

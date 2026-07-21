@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# uv
+.uv/
+uv.lock
+
+# tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# generated images (keep anything under docs/)
+*.png
+*.jpg
+*.jpeg
+*.webp
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+!docs/**/*.webp
+
+# local model cache
+.cache/

@@ -1,0 +1,53 @@
+[project]
+name = "imggen"
+version = "0.1.0"
+description = "Command-line image generation (Stable Diffusion / Qwen-Image / transparent layers) with automatic model download."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "matorix" }]
+dependencies = [
+    "torch",
+    "torchvision",
+    "diffusers>=0.35",
+    "transformers>=4.49",
+    "accelerate>=1.0",
+    "safetensors",
+    "sentencepiece",
+    "protobuf",
+    "pillow>=10.0",
+    "numpy",
+    "opencv-python-headless",
+    "einops",
+    "timm",              # required by BiRefNet (see-through matting)
+    "kornia",            # required by BiRefNet (see-through matting)
+    "typer>=0.12",
+    "huggingface-hub>=0.26",
+    "gguf>=0.19.0",    # load GGUF-quantized Qwen transformers
+    "peft>=0.19.1",    # LoRA loading for LayerDiffuse (see-through)
+]
+
+[project.scripts]
+imggen = "imggen.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/matorix/imggen"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imggen"]
+
+# --- PyTorch CUDA wheels -------------------------------------------------
+# GB10 / Blackwell (sm_121), aarch64. CUDA 13.0 wheels (matches local toolkit
+# and driver 580.x). Change to pytorch-cu132 if you need the CUDA 13.2 build.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }

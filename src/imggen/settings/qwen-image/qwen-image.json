@@ -1,0 +1,6 @@
+{
+  "description": "Qwen-Image — GGUF Q4_K_M transformer + Qwen/Qwen-Image base (default)",
+  "source": { "hf_repo": "QuantStack/Qwen-Image-GGUF", "hf_file": "Qwen_Image-Q4_K_M.gguf" },
+  "load": { "base_repo": "Qwen/Qwen-Image" },
+  "defaults": { "steps": 50, "cfg": 4.0 }
+}

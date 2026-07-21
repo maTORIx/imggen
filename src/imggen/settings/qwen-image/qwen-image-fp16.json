@@ -1,0 +1,5 @@
+{
+  "description": "Qwen-Image — full (unquantized) weights",
+  "source": { "hf_repo": "Qwen/Qwen-Image" },
+  "defaults": { "steps": 50, "cfg": 4.0 }
+}

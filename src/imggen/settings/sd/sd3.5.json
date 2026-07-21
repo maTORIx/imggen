@@ -1,0 +1,6 @@
+{
+  "description": "Stable Diffusion 3.5 Large",
+  "source": { "hf_repo": "stabilityai/stable-diffusion-3.5-large" },
+  "gated": true,
+  "defaults": { "steps": 30, "cfg": 7.0 }
+}

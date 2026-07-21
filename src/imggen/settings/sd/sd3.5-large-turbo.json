@@ -1,0 +1,6 @@
+{
+  "description": "Stable Diffusion 3.5 Large Turbo (few-step)",
+  "source": { "hf_repo": "stabilityai/stable-diffusion-3.5-large-turbo" },
+  "gated": true,
+  "defaults": { "steps": 4, "cfg": 0.0 }
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Qwen-Image-Edit 2509 — GGUF Q4_K_M transformer + base (default)",
+  "source": { "hf_repo": "QuantStack/Qwen-Image-Edit-2509-GGUF", "hf_file": "Qwen-Image-Edit-2509-Q4_K_M.gguf" },
+  "load": { "base_repo": "Qwen/Qwen-Image-Edit-2509" },
+  "defaults": { "steps": 50, "cfg": 4.0 }
+}
