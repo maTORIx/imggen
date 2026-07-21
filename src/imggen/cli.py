@@ -20,6 +20,7 @@ from . import __version__
 from . import schedulers
 from .device import describe
 from .params import GenRequest
+from .remote import DEFAULT_PORT
 from .runner import echo_saved, run_and_save
 
 app = typer.Typer(
@@ -648,7 +649,7 @@ def version():
 @app.command()
 def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address (0.0.0.0 = all interfaces)."),
-    port: int = typer.Option(7863, "--port", help="Port to listen on."),
+    port: int = typer.Option(DEFAULT_PORT, "--port", help=f"Port to listen on (default {DEFAULT_PORT})."),
     api_key: Optional[str] = typer.Option(
         None, "--api-key", envvar="IMGGEN_API_KEY",
         help="Require this bearer token on /generate (recommended when exposed).",
@@ -676,7 +677,9 @@ app.add_typer(remote_app, name="remote")
 
 @remote_app.command("set")
 def remote_set(
-    endpoint: str = typer.Argument(..., help="HOST:PORT of an `imggen serve` daemon."),
+    endpoint: str = typer.Argument(
+        ..., help=f"HOST[:PORT] of an `imggen serve` daemon (PORT defaults to {DEFAULT_PORT})."
+    ),
     api_key: Optional[str] = typer.Option(
         None, "--api-key", envvar="IMGGEN_API_KEY",
         help="Bearer token, if the server requires one.",
@@ -685,8 +688,13 @@ def remote_set(
     """Route generation to a remote imggen serve daemon (no local fallback)."""
     from . import remote
 
-    path = remote.save(endpoint, api_key)
-    typer.secho(f"remote set: {endpoint}", fg=typer.colors.GREEN)
+    try:
+        path = remote.save(endpoint, api_key)
+    except ValueError as exc:
+        typer.secho(f"invalid endpoint {endpoint!r}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    stored = remote.endpoint()
+    typer.secho(f"remote set: {stored}", fg=typer.colors.GREEN)
     typer.secho(f"  saved to {path}", fg=typer.colors.BRIGHT_BLACK)
     try:
         info = remote.ping(timeout=5)

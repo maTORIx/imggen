@@ -1,6 +1,6 @@
 """Client-side remote execution: config + HTTP transport.
 
-When a remote endpoint is configured (``imggen remote set HOST:PORT``), the
+When a remote endpoint is configured (``imggen remote set HOST[:PORT]``), the
 generate commands ship the :class:`~imggen.params.GenRequest` to an
 ``imggen serve`` daemon on a GPU host instead of running a backend locally. The
 daemon returns the images and metadata; the client saves them, so output paths
@@ -20,13 +20,26 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .manifest import config_home
 from .params import GenRequest
+
+#: Port ``imggen serve`` listens on by default; assumed when an endpoint omits
+#: one, so ``imggen remote set 192.168.1.50`` targets the daemon directly.
+DEFAULT_PORT = 7863
+
+# Invisible characters that survive ``str.strip()`` but make ``getaddrinfo``
+# fail with ``[Errno -2]`` when they ride along on a copy-pasted address (a
+# classic "curl works but imggen doesn't" cause). Stripped from the endpoint.
+_INVISIBLE = (
+    "\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u00a0"  # zero-width/joiners, BOM, marks, NBSP
+)
 
 
 class RemoteError(RuntimeError):
@@ -72,10 +85,15 @@ def endpoint() -> str | None:
 
 
 def save(ep: str, api_key: str | None) -> Path:
-    """Persist ``ep`` (and optional ``api_key``) as the active remote."""
+    """Persist a normalized ``ep`` (and optional ``api_key``) as the active remote.
+
+    Raises :class:`ValueError` (via :func:`normalize_endpoint`) if ``ep`` has no
+    parseable host, so a typo is caught at ``imggen remote set`` time.
+    """
+    endpoint = normalize_endpoint(ep)
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict = {"endpoint": ep.strip()}
+    data: dict = {"endpoint": endpoint}
     if api_key:
         data["api_key"] = api_key
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -93,11 +111,42 @@ def clear() -> bool:
 
 # --- transport ----------------------------------------------------------
 
-def _base_url(ep: str) -> str:
-    ep = ep.strip().rstrip("/")
+def normalize_endpoint(ep: str) -> str:
+    """Return a clean ``scheme://host:port`` base URL for *ep*.
+
+    Accepts ``host``, ``host:port``, ``http://host:port``, or a full URL with a
+    path. A missing scheme defaults to ``http``; a missing port on an ``http``
+    endpoint defaults to :data:`DEFAULT_PORT` (the ``imggen serve`` default), so
+    the port can be omitted for a default deployment. Any path/query/fragment is
+    dropped so ``/health`` and ``/generate`` append cleanly, and stray
+    copy-paste characters (spaces, zero-width marks, wrapping quotes) are
+    removed — those are a common cause of ``getaddrinfo`` ``[Errno -2]`` even
+    when the same address works under ``curl``.
+
+    Raises :class:`ValueError` if no host can be parsed.
+    """
+    ep = "".join(c for c in ep if c not in _INVISIBLE).strip().strip("<>\"'").strip()
+    if not ep:
+        raise ValueError("empty remote endpoint")
     if "://" not in ep:
         ep = "http://" + ep
-    return ep
+    parts = urlsplit(ep)
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"could not parse a host from remote endpoint {ep!r}")
+    try:
+        port = parts.port
+    except ValueError as exc:  # e.g. non-numeric port
+        raise ValueError(f"invalid port in remote endpoint {ep!r}: {exc}") from exc
+    scheme = parts.scheme or "http"
+    if port is None and scheme == "http":
+        port = DEFAULT_PORT
+    hostpart = f"[{host}]" if ":" in host else host  # re-bracket IPv6 literals
+    return f"{scheme}://{hostpart}" if port is None else f"{scheme}://{hostpart}:{port}"
+
+
+def _base_url(ep: str) -> str:
+    return normalize_endpoint(ep)
 
 
 def _headers(cfg: dict) -> dict:
@@ -108,6 +157,18 @@ def _headers(cfg: dict) -> dict:
     return headers
 
 
+def _explain(exc: BaseException) -> str:
+    """A human-friendly transport error, with a hint when the host won't resolve."""
+    reason = getattr(exc, "reason", None) or exc
+    if isinstance(reason, socket.gaierror):
+        return (
+            f"cannot resolve the server host ({reason}). Check the address — if "
+            "you used a hostname, try the server's IP — and note an "
+            "http_proxy/https_proxy env var can break this even when curl works."
+        )
+    return str(exc)
+
+
 def _resolve_cfg(ep: str | None, api_key: str | None) -> dict:
     if ep:
         cfg = {"endpoint": ep}
@@ -116,7 +177,7 @@ def _resolve_cfg(ep: str | None, api_key: str | None) -> dict:
         return cfg
     cfg = load()
     if not cfg:
-        raise RemoteError("no remote endpoint configured (imggen remote set HOST:PORT)")
+        raise RemoteError("no remote endpoint configured (imggen remote set HOST[:PORT])")
     return cfg
 
 
@@ -129,7 +190,7 @@ def ping(ep: str | None = None, api_key: str | None = None, timeout: float = 5.0
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise RemoteError(f"cannot reach imggen server at {cfg['endpoint']}: {exc}") from exc
+        raise RemoteError(f"cannot reach imggen server at {url}: {_explain(exc)}") from exc
 
 
 def _gen_timeout() -> float | None:
@@ -166,7 +227,7 @@ def run(req: GenRequest):
             f"remote generation failed ({exc.code}): {_http_error_detail(exc)}"
         ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise RemoteError(f"remote generation failed: {exc}") from exc
+        raise RemoteError(f"remote generation failed: {_explain(exc)}") from exc
     return _decode_results(req, data)
 
 

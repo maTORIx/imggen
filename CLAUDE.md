@@ -21,7 +21,7 @@ uv run imggen pull sd pony-diffusion-v6-xl   # install a catalog preset + downlo
 uv run imggen samplers               # list --sampler aliases
 uv run imggen init [--force]         # (re)seed ~/.config/imggen/settings with built-in presets
 uv run imggen serve [--host 0.0.0.0 --port 7863 --api-key KEY]   # run a generation daemon on this GPU host
-uv run imggen remote set HOST:PORT [--api-key KEY]   # (client) route every generate through that daemon
+uv run imggen remote set HOST[:PORT] [--api-key KEY]   # (client) route every generate through that daemon (PORT defaults to 7863)
 uv run imggen remote status          # ping the configured remote (device/version)
 uv run imggen remote clear           # forget the remote; run locally again
 uv run imggen <kind> ... --local     # force local for one run even if a remote is set
