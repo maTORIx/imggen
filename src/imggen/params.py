@@ -30,6 +30,7 @@ class GenRequest:
     # see-through specific
     mode: str = "transparent"  # "transparent" | "layers"
     method: str = "auto"  # "auto" | "layerdiffuse" | "matte" | "decompose"
+    parts: str = "face"  # --method decompose: "face" (head split, body merged) | "all"
 
     device: str | None = None
     dtype: str | None = None

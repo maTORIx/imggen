@@ -384,6 +384,12 @@ def see_through(
         help="auto | layerdiffuse (native transparent) | matte (BiRefNet) | "
              "decompose (part layers → PSD)",
     ),
+    parts: str = typer.Option(
+        "face", "--parts",
+        help="--method decompose only: face = split the head (hair/eyes/brows/mouth/...) "
+             "and merge everything from the neck down into one 'body' layer; "
+             "all = keep every See-through part as its own layer.",
+    ),
     init: Optional[str] = Init,
     negative: Optional[str] = Negative,
     prompt_prefix: Optional[str] = PromptPrefix,
@@ -416,11 +422,13 @@ def see_through(
         raise typer.BadParameter("mode must be 'transparent' or 'layers'")
     if method not in ("auto", "layerdiffuse", "matte", "decompose"):
         raise typer.BadParameter("method must be 'auto', 'layerdiffuse', 'matte', or 'decompose'")
+    if parts not in ("face", "all"):
+        raise typer.BadParameter("parts must be 'face' or 'all'")
     if not prompt and not init:
         raise typer.BadParameter("provide --prompt to generate, or --init for an existing image")
     _go(
         GenRequest(
-            kind="see-through", prompt=prompt, mode=mode, method=method, init=init,
+            kind="see-through", prompt=prompt, mode=mode, method=method, parts=parts, init=init,
             negative=negative, prompt_prefix=prompt_prefix, prompt_suffix=prompt_suffix,
             model=model, width=width, height=height, steps=steps,
             cfg=cfg, sampler=sampler, seed=seed, num=num, batch_size=batch_size,

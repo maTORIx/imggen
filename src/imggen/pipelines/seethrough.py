@@ -193,12 +193,46 @@ def _seethrough_env() -> tuple[Path, Path]:
     )
 
 
+#: Tags kept as their own PSD layer under ``--parts face``. Everything else —
+#: neck, clothing, hands, feet, tail, props — collapses into one ``body`` layer.
+#: Word boundaries matter: a bare ``ear`` would otherwise match ``handwear``,
+#: ``footwear`` and every other ``*wear`` tag.
+_FACE_TAGS_RE = r"\b(?:hair|head\w*|face|eye\w*|ear\w*|nose|mouth|brow\w*|irid\w*|iris)\b"
+
+
+def _parts_mode(req: GenRequest) -> str:
+    """``face`` (split the head only) or ``all`` (every See-through part)."""
+    return (req.parts or "face").lower()
+
+
+def _merge_body_layers(py: Path, repo: Path, psd: Path) -> None:
+    """Collapse the non-face layers of *psd* into a single ``body`` layer, in place.
+
+    Runs in the isolated venv: rewriting the PSD needs ``psd_tools`` and
+    See-through's own writer, neither of which lives in imggen's interpreter.
+    A failure here is not fatal — the full-split PSD is still a usable result —
+    so it warns and leaves the file alone.
+    """
+    script = Path(__file__).resolve().parent.parent / "data" / "seethrough_merge.py"
+    cmd = [str(py), str(script), "--psd", str(psd), "--keep-re", _FACE_TAGS_RE]
+    proc = subprocess.run(cmd, cwd=str(repo))
+    if proc.returncode != 0:
+        typer.secho(
+            f"warning: merging body layers failed (exit {proc.returncode}); "
+            "keeping the full part split. Use --parts all to silence this.",
+            fg=typer.colors.YELLOW,
+        )
+
+
 def _generate_decompose(req: GenRequest, on_step=None):
     """Decompose a character into semantic part layers, exported as one PSD.
 
     The base image is either ``--init`` or freshly generated with the ``sd``
     backend; See-through then splits it into up to ~23 inpainted RGBA layers
     (hair, eyes, mouth, nose, ears, face, clothing) ordered by inferred depth.
+    By default (``--parts face``) only the head stays split and everything from
+    the neck down is merged back into a single ``body`` layer, which is what
+    character editing actually wants; ``--parts all`` keeps every part.
     Returns a single result whose ``meta['_psd_path']`` the runner moves to the
     user's ``--out`` as a ``.psd`` (the preview image is the base, for the inline
     terminal preview only — the layers live in the PSD). Under ``imggen serve``
@@ -247,6 +281,8 @@ def _generate_decompose(req: GenRequest, on_step=None):
         psd_src = out_dir / "input.psd"
         if not psd_src.exists():
             raise RuntimeError(f"See-through produced no PSD (expected {psd_src})")
+        if _parts_mode(req) == "face":
+            _merge_body_layers(py, repo, psd_src)
         # The sidecar's ``parts`` maps 1:1 to the PSD's layers (both come from the
         # same dict), so it is the accurate layer count — unlike the per-part PNG
         # dir, which also holds pre-split/merged fragments.
@@ -276,6 +312,7 @@ def _generate_decompose(req: GenRequest, on_step=None):
         "seed": seed,
         "size": f"{base.width}x{base.height}",
         "resolution": resolution,
+        "parts": _parts_mode(req),
         "_psd_path": stash,
     }
     if n_layers:
