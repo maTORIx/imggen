@@ -1,6 +1,6 @@
 """see-through backend: transparent images and layer decomposition.
 
-Two engines:
+Three engines:
 
 * **LayerDiffuse** (``--method layerdiffuse``): native transparent generation
   with a real alpha channel, recovering soft edges (hair, glass, glow). Used by
@@ -9,6 +9,12 @@ Two engines:
   with the Stable Diffusion backend) is run through a BiRefNet matting model to
   produce the foreground alpha. Used for ``--init`` decomposition and for the
   ``layers`` mode.
+* **decompose** (``--method decompose``): full anime part-layer decomposition
+  (hair / eyes / mouth / nose / ears / face / clothing, with occluded regions
+  inpainted) exported as a single layered ``.psd``. Powered by the See-through
+  model (Lin et al., SIGGRAPH 2026), which pins an incompatible diffusers/
+  transformers stack, so it runs in an **isolated venv driven as a subprocess**
+  (see :func:`_seethrough_env`) — local execution only, never the remote daemon.
 
 Modes:
 
@@ -19,14 +25,19 @@ Modes:
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import torch
 import typer
 from PIL import Image
 
-from ..config import hf_token
+from ..config import hf_token, make_seeds
 from ..params import GenRequest
 from . import common, layerdiffuse, sd
 
@@ -39,6 +50,8 @@ def generate(req: GenRequest, on_step=None):
     method = _resolve_method(req)
     if method == "layerdiffuse":
         return layerdiffuse.generate(req, on_step=on_step)
+    if method == "decompose":
+        return _generate_decompose(req, on_step=on_step)
     return _generate_matte(req, on_step=on_step)
 
 
@@ -142,3 +155,125 @@ def _inpaint_background(img: Image.Image, alpha: Image.Image) -> Image.Image:
     binary = cv2.dilate(binary, np.ones((7, 7), np.uint8), iterations=2)
     filled = cv2.inpaint(bgr, binary, 5, cv2.INPAINT_TELEA)
     return Image.fromarray(cv2.cvtColor(filled, cv2.COLOR_BGR2RGB))
+
+
+# --- decompose (See-through part-layer -> PSD) ----------------------------
+#
+# See-through pins diffusers==0.37 / transformers==5.0 and vendors deep
+# subclasses of diffusers internals, incompatible with imggen's own stack, so
+# it cannot share this process. Instead we drive its ``inference_psd.py`` in a
+# separate venv as a subprocess and hand the produced ``.psd`` back to the
+# runner. Install location defaults under the imggen cache; override with
+# ``$IMGGEN_SEETHROUGH_REPO`` / ``$IMGGEN_SEETHROUGH_PYTHON``.
+
+
+def _seethrough_home() -> Path:
+    root = os.environ.get("IMGGEN_CACHE")
+    base = Path(root) if root else Path.home() / ".cache" / "imggen"
+    return base / "seethrough"
+
+
+def _seethrough_env() -> tuple[Path, Path]:
+    """Return ``(repo_dir, python_exe)`` for the isolated See-through install."""
+    home = _seethrough_home()
+    repo = Path(os.environ.get("IMGGEN_SEETHROUGH_REPO") or home / "repo")
+    py = Path(os.environ.get("IMGGEN_SEETHROUGH_PYTHON") or home / "venv" / "bin" / "python")
+    script = repo / "inference" / "scripts" / "inference_psd.py"
+    if not script.exists() or not py.exists():
+        raise RuntimeError(
+            "see-through --method decompose needs the isolated See-through install.\n"
+            f"  expected repo:   {repo}\n"
+            f"  expected python: {py}\n"
+            "Set $IMGGEN_SEETHROUGH_REPO / $IMGGEN_SEETHROUGH_PYTHON to point at a\n"
+            "See-through checkout (https://github.com/shitagaki-lab/see-through) and\n"
+            "its inference venv."
+        )
+    return repo, py
+
+
+def _generate_decompose(req: GenRequest, on_step=None):
+    """Decompose a character into semantic part layers, exported as one PSD.
+
+    The base image is either ``--init`` or freshly generated with the ``sd``
+    backend; See-through then splits it into up to ~23 inpainted RGBA layers
+    (hair, eyes, mouth, nose, ears, face, clothing) ordered by inferred depth.
+    Returns a single result whose ``meta['_psd_path']`` the runner moves to the
+    user's ``--out`` as a ``.psd`` (the preview image is the base, for the inline
+    terminal preview only — the layers live in the PSD).
+    """
+    repo, py = _seethrough_env()
+    seed = make_seeds(req.seed, 1)[0]
+    if req.num > 1:
+        typer.secho("note: decompose emits one PSD per run; ignoring --num > 1", fg=typer.colors.YELLOW)
+
+    if req.init:
+        base = common.load_init_image(req.init).convert("RGB")
+        base_meta = {"prompt": req.prompt, "model": req.init}
+    else:
+        sub = replace(req, kind="sd", mode="transparent", method="auto", num=1, batch_size=1)
+        img, meta, _ = sd.generate(sub, on_step=on_step)[0]
+        base = img.convert("RGB")
+        base_meta = {"prompt": meta.get("prompt"), "model": meta.get("model")}
+
+    resolution = int(req.width or req.height or 1280)
+
+    with tempfile.TemporaryDirectory(prefix="imggen-st-") as td:
+        tdp = Path(td)
+        in_path = tdp / "input.png"
+        base.save(in_path)
+        out_dir = tdp / "out"
+        cmd = [
+            str(py), "inference/scripts/inference_psd.py",
+            "--srcp", str(in_path),
+            "--save_dir", str(out_dir),
+            "--save_to_psd",
+            "--resolution", str(resolution),
+            "--seed", str(seed),
+        ]
+        typer.secho(
+            f"decomposing into part layers via See-through (~several min, res {resolution}) ...",
+            fg=typer.colors.CYAN,
+        )
+        # Inherit stdout/stderr so the user sees See-through's own progress bars.
+        proc = subprocess.run(cmd, cwd=str(repo))
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"See-through decomposition failed (exit {proc.returncode}); see the output above"
+            )
+        psd_src = out_dir / "input.psd"
+        if not psd_src.exists():
+            raise RuntimeError(f"See-through produced no PSD (expected {psd_src})")
+        # The sidecar's ``parts`` maps 1:1 to the PSD's layers (both come from the
+        # same dict), so it is the accurate layer count — unlike the per-part PNG
+        # dir, which also holds pre-split/merged fragments.
+        n_layers = None
+        psd_json = out_dir / "input.psd.json"
+        if psd_json.exists():
+            import json as _json
+
+            try:
+                n_layers = len(_json.loads(psd_json.read_text()).get("parts", {}))
+            except Exception:
+                n_layers = None
+        # Copy the PSD out before the temp dir is cleaned; the runner moves this
+        # stashed file to --out (and thereby removes it), so nothing leaks.
+        fd, stash = tempfile.mkstemp(prefix="imggen-st-", suffix=".psd")
+        os.close(fd)
+        shutil.copyfile(psd_src, stash)
+
+    if n_layers:
+        typer.secho(f"  {n_layers} layers", fg=typer.colors.GREEN)
+    meta = {
+        "kind": req.kind,
+        "mode": "decompose",
+        "method": "decompose",
+        "prompt": base_meta.get("prompt"),
+        "model": base_meta.get("model"),
+        "seed": seed,
+        "size": f"{base.width}x{base.height}",
+        "resolution": resolution,
+        "_psd_path": stash,
+    }
+    if n_layers:
+        meta["layers"] = n_layers
+    return [(base, meta, None)]

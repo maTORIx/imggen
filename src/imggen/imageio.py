@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".psd"}
 
 
 def build_output_paths(out: str | None, kind: str, seeds: list[int]) -> list[Path]:

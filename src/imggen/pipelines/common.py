@@ -69,6 +69,22 @@ def generators(seeds: list[int], device: str) -> list[torch.Generator]:
     return [torch.Generator(device=gen_device).manual_seed(s) for s in seeds]
 
 
+def batches(seeds: list[int], gens: list, batch_size: int | None):
+    """Split per-image seeds/generators into forward-pass batches.
+
+    Yields ``(base_index, seed_chunk, gen_chunk)`` so a backend can run
+    ``len(chunk)`` images in a single ``pipe()`` call (``num_images_per_prompt``)
+    while still giving each image its own consecutive seed via ``gen_chunk`` (a
+    list of that many generators). ``batch_size`` is clamped to at least 1, so the
+    default (``1``) yields one image per batch — identical to the old per-image
+    loop (diffusers treats a single-element generator list the same as one
+    generator, so the plain path stays bit-for-bit).
+    """
+    step = max(int(batch_size or 1), 1)
+    for base in range(0, len(seeds), step):
+        yield base, seeds[base:base + step], gens[base:base + step]
+
+
 def place(pipe, device: str, offload: bool):
     """Move a pipeline onto the device, or enable CPU offload.
 

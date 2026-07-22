@@ -117,26 +117,28 @@ def generate(req: GenRequest, on_step=None):
             kwargs["height"] = height
 
     results = []
-    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+    for base, seed_chunk, gen_chunk in common.batches(seeds, gens, req.batch_size):
         call_kwargs = dict(kwargs)
-        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
-        image = pipe(generator=gen, **call_kwargs).images[0]
-        meta = {
-            "kind": req.kind,
-            "prompt": prompt,
-            "negative": negative,
-            "model": resolved.ref,
-            "steps": steps,
-            "cfg": cfg,
-            "seed": seed,
-            "size": f"{image.width}x{image.height}",
-        }
-        if sampler:
-            meta["sampler"] = sampler
-        if weighted:
-            meta["weighted"] = True
-        if img2img:
-            meta["init"] = req.init
-            meta["strength"] = strength
-        results.append((image, meta, None))
+        call_kwargs["num_images_per_prompt"] = len(seed_chunk)
+        common.attach_progress(call_kwargs, pipe, on_step, base, len(seeds))
+        images = pipe(generator=gen_chunk, **call_kwargs).images
+        for seed, image in zip(seed_chunk, images):
+            meta = {
+                "kind": req.kind,
+                "prompt": prompt,
+                "negative": negative,
+                "model": resolved.ref,
+                "steps": steps,
+                "cfg": cfg,
+                "seed": seed,
+                "size": f"{image.width}x{image.height}",
+            }
+            if sampler:
+                meta["sampler"] = sampler
+            if weighted:
+                meta["weighted"] = True
+            if img2img:
+                meta["init"] = req.init
+                meta["strength"] = strength
+            results.append((image, meta, None))
     return results

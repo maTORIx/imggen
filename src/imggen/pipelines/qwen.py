@@ -173,27 +173,29 @@ def generate(req: GenRequest, on_step=None):
 
     model_meta = _model_meta(resolved)
     results = []
-    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+    for base, seed_chunk, gen_chunk in common.batches(seeds, gens, req.batch_size):
         call_kwargs = dict(kwargs)
-        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
-        image = pipe(generator=gen, **call_kwargs).images[0]
-        results.append(
-            (
-                image,
-                {
-                    "kind": req.kind,
-                    "prompt": prompt,
-                    "negative": negative,
-                    **model_meta,
-                    "steps": steps,
-                    "cfg": cfg,
-                    "seed": seed,
-                    "size": f"{image.width}x{image.height}",
-                    **({"sampler": sampler} if sampler else {}),
-                },
-                None,
+        call_kwargs["num_images_per_prompt"] = len(seed_chunk)
+        common.attach_progress(call_kwargs, pipe, on_step, base, len(seeds))
+        images = pipe(generator=gen_chunk, **call_kwargs).images
+        for seed, image in zip(seed_chunk, images):
+            results.append(
+                (
+                    image,
+                    {
+                        "kind": req.kind,
+                        "prompt": prompt,
+                        "negative": negative,
+                        **model_meta,
+                        "steps": steps,
+                        "cfg": cfg,
+                        "seed": seed,
+                        "size": f"{image.width}x{image.height}",
+                        **({"sampler": sampler} if sampler else {}),
+                    },
+                    None,
+                )
             )
-        )
     return results
 
 
@@ -222,6 +224,8 @@ def generate_edit(req: GenRequest, on_step=None):
     suffix = common.setting(req.prompt_suffix, "prompt_suffix", d, None)
     prompt = common.compose_prompt(req.prompt, prefix, suffix)
     prompt, negative = _strip_weights(prompt, negative)
+    width = common.setting(req.width, "width", d, None)
+    height = common.setting(req.height, "height", d, None)
     sampler = common.setting(req.sampler, "sampler", d, None)
     common.set_scheduler(pipe, sampler)
     init_image = common.load_init_image(req.init)
@@ -234,29 +238,37 @@ def generate_edit(req: GenRequest, on_step=None):
         num_inference_steps=steps,
         true_cfg_scale=cfg,
     )
+    # Explicit output resolution; when unset the pipeline derives it from the
+    # input image (Qwen-Image-Edit auto-picks a size close to the init).
+    if width:
+        kwargs["width"] = width
+    if height:
+        kwargs["height"] = height
 
     model_meta = _model_meta(resolved)
     results = []
-    for i, (seed, gen) in enumerate(zip(seeds, gens)):
+    for base, seed_chunk, gen_chunk in common.batches(seeds, gens, req.batch_size):
         call_kwargs = dict(kwargs)
-        common.attach_progress(call_kwargs, pipe, on_step, i, len(seeds))
-        image = pipe(generator=gen, **call_kwargs).images[0]
-        results.append(
-            (
-                image,
-                {
-                    "kind": req.kind,
-                    "prompt": prompt,
-                    "negative": negative,
-                    **model_meta,
-                    "init": req.init,
-                    "steps": steps,
-                    "cfg": cfg,
-                    "seed": seed,
-                    "size": f"{image.width}x{image.height}",
-                    **({"sampler": sampler} if sampler else {}),
-                },
-                None,
+        call_kwargs["num_images_per_prompt"] = len(seed_chunk)
+        common.attach_progress(call_kwargs, pipe, on_step, base, len(seeds))
+        images = pipe(generator=gen_chunk, **call_kwargs).images
+        for seed, image in zip(seed_chunk, images):
+            results.append(
+                (
+                    image,
+                    {
+                        "kind": req.kind,
+                        "prompt": prompt,
+                        "negative": negative,
+                        **model_meta,
+                        "init": req.init,
+                        "steps": steps,
+                        "cfg": cfg,
+                        "seed": seed,
+                        "size": f"{image.width}x{image.height}",
+                        **({"sampler": sampler} if sampler else {}),
+                    },
+                    None,
+                )
             )
-        )
     return results

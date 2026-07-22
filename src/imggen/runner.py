@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -89,6 +90,17 @@ def run_and_save(
     saved: list[Path] = []
     for (image, meta, hint), base_idx in zip(results, base_of):
         path = base_paths[base_idx]
+        # A backend that produced a real multi-layer document (see-through
+        # --method decompose) hands back the file path in ``_psd_path``; deliver
+        # it verbatim as a ``.psd`` rather than rasterizing the preview image.
+        psd_src = meta.get("_psd_path")
+        if psd_src:
+            if path.suffix.lower() != ".psd":
+                path = path.with_suffix(".psd")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(psd_src, path)
+            saved.append(path)
+            continue
         if hint:
             path = path.with_name(f"{path.stem}_{hint}{path.suffix or '.png'}")
         # RGBA needs a format that keeps the alpha channel.

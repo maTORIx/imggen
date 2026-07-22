@@ -125,7 +125,14 @@ Sampler = typer.Option(
     autocompletion=_complete_sampler,
 )
 Seed = typer.Option(None, "--seed", help="Base seed (consecutive across a batch).")
-Num = typer.Option(1, "--num", "-n", min=1, help="Number of images.")
+Num = typer.Option(1, "--num", "-n", min=1, help="Number of images (total).")
+BatchSize = typer.Option(
+    1, "--batch-size", "-b", min=1,
+    help="Images per forward pass (num_images_per_prompt). Faster than -n but "
+         "uses ~batch-size× the VRAM; each image still gets its own seed. "
+         "-n is split into ceil(n/batch-size) passes. Not applied to see-through "
+         "layerdiffuse.",
+)
 Init = typer.Option(None, "--init", "-i", help="Input image (img2img / edit / see-through base).")
 Strength = typer.Option(None, "--strength", min=0.0, max=1.0, help="img2img denoising strength (default 0.8).")
 Device = typer.Option(None, "--device", help="cuda / mps / cpu (auto if unset).")
@@ -246,6 +253,7 @@ def sd(
     sampler: Optional[str] = Sampler,
     seed: Optional[int] = Seed,
     num: int = Num,
+    batch_size: int = BatchSize,
     init: Optional[str] = Init,
     strength: Optional[float] = Strength,
     device: Optional[str] = Device,
@@ -268,8 +276,8 @@ def sd(
             kind="sd", prompt=prompt, negative=negative, prompt_prefix=prompt_prefix,
             prompt_suffix=prompt_suffix, model=model, width=width,
             height=height, steps=steps, cfg=cfg, sampler=sampler, seed=seed, num=num,
-            init=init, strength=strength, device=device, dtype=dtype, offload=offload,
-            hf_token=hf_token,
+            batch_size=batch_size, init=init, strength=strength, device=device,
+            dtype=dtype, offload=offload, hf_token=hf_token,
         ),
         out, metadata, local, preview,
     )
@@ -291,6 +299,7 @@ def qwen_image(
     sampler: Optional[str] = Sampler,
     seed: Optional[int] = Seed,
     num: int = Num,
+    batch_size: int = BatchSize,
     device: Optional[str] = Device,
     dtype: Optional[str] = Dtype,
     offload: bool = Offload,
@@ -311,8 +320,8 @@ def qwen_image(
             kind="qwen-image", prompt=prompt, negative=negative,
             prompt_prefix=prompt_prefix, prompt_suffix=prompt_suffix, model=model,
             width=width, height=height, steps=steps, cfg=cfg, sampler=sampler,
-            seed=seed, num=num, device=device, dtype=dtype, offload=offload,
-            hf_token=hf_token,
+            seed=seed, num=num, batch_size=batch_size, device=device, dtype=dtype,
+            offload=offload, hf_token=hf_token,
         ),
         out, metadata, local, preview,
     )
@@ -328,11 +337,14 @@ def qwen_image_edit(
     prompt_suffix: Optional[str] = PromptSuffix,
     model: Optional[str] = Model,
     out: Optional[str] = Out,
+    width: Optional[int] = Width,
+    height: Optional[int] = Height,
     steps: Optional[int] = Steps,
     cfg: Optional[float] = Cfg,
     sampler: Optional[str] = Sampler,
     seed: Optional[int] = Seed,
     num: int = Num,
+    batch_size: int = BatchSize,
     device: Optional[str] = Device,
     dtype: Optional[str] = Dtype,
     offload: bool = Offload,
@@ -353,8 +365,10 @@ def qwen_image_edit(
         GenRequest(
             kind="qwen-image-edit", prompt=prompt, init=init, negative=negative,
             prompt_prefix=prompt_prefix, prompt_suffix=prompt_suffix,
-            model=model, steps=steps, cfg=cfg, sampler=sampler, seed=seed, num=num,
-            device=device, dtype=dtype, offload=offload, hf_token=hf_token,
+            model=model, width=width, height=height, steps=steps, cfg=cfg,
+            sampler=sampler, seed=seed, num=num,
+            batch_size=batch_size, device=device, dtype=dtype, offload=offload,
+            hf_token=hf_token,
         ),
         out, metadata, local, preview,
     )
@@ -367,7 +381,8 @@ def see_through(
     mode: str = typer.Option("transparent", "--mode", help="transparent | layers"),
     method: str = typer.Option(
         "auto", "--method",
-        help="auto | layerdiffuse (native transparent) | matte (BiRefNet)",
+        help="auto | layerdiffuse (native transparent) | matte (BiRefNet) | "
+             "decompose (part layers → PSD, local-only)",
     ),
     init: Optional[str] = Init,
     negative: Optional[str] = Negative,
@@ -382,6 +397,7 @@ def see_through(
     sampler: Optional[str] = Sampler,
     seed: Optional[int] = Seed,
     num: int = Num,
+    batch_size: int = BatchSize,
     device: Optional[str] = Device,
     dtype: Optional[str] = Dtype,
     offload: bool = Offload,
@@ -398,19 +414,25 @@ def see_through(
         return _save_preset(ctx, "see-through", model, alias, desc)
     if mode not in ("transparent", "layers"):
         raise typer.BadParameter("mode must be 'transparent' or 'layers'")
-    if method not in ("auto", "layerdiffuse", "matte"):
-        raise typer.BadParameter("method must be 'auto', 'layerdiffuse', or 'matte'")
+    if method not in ("auto", "layerdiffuse", "matte", "decompose"):
+        raise typer.BadParameter("method must be 'auto', 'layerdiffuse', 'matte', or 'decompose'")
     if not prompt and not init:
         raise typer.BadParameter("provide --prompt to generate, or --init for an existing image")
+    # decompose shells out to the isolated See-through env on this host; it has no
+    # remote path (the daemon returns images, not a server-local PSD), so pin local.
+    run_local = local
+    if method == "decompose":
+        run_local = True
+        typer.secho("note: decompose runs locally via the isolated See-through env", fg=typer.colors.YELLOW)
     _go(
         GenRequest(
             kind="see-through", prompt=prompt, mode=mode, method=method, init=init,
             negative=negative, prompt_prefix=prompt_prefix, prompt_suffix=prompt_suffix,
             model=model, width=width, height=height, steps=steps,
-            cfg=cfg, sampler=sampler, seed=seed, num=num, device=device, dtype=dtype,
-            offload=offload, hf_token=hf_token,
+            cfg=cfg, sampler=sampler, seed=seed, num=num, batch_size=batch_size,
+            device=device, dtype=dtype, offload=offload, hf_token=hf_token,
         ),
-        out, metadata, local, preview,
+        out, metadata, run_local, preview,
     )
 
 

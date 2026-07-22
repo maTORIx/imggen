@@ -23,12 +23,13 @@ class GenRequest:
 
     seed: int | None = None
     num: int = 1
+    batch_size: int = 1  # images per forward pass (num_images_per_prompt); each still gets its own seed
 
     init: str | None = None  # input image path (img2img / edit / see-through)
 
     # see-through specific
     mode: str = "transparent"  # "transparent" | "layers"
-    method: str = "auto"  # "auto" | "layerdiffuse" | "matte"
+    method: str = "auto"  # "auto" | "layerdiffuse" | "matte" | "decompose"
 
     device: str | None = None
     dtype: str | None = None

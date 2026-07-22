@@ -84,6 +84,10 @@ def generate(req: GenRequest, on_step=None):
         height=req.height or 1024,
         num_inference_steps=steps,
         guidance_scale=cfg,
+        # Always 1: the transparent VAE decoder conditions per-sample on the
+        # latents, so its condition batch must match the sample batch (see
+        # vendor/layer_diffuse/loaders.py). `--batch-size` is therefore not
+        # applied here; layerdiffuse stays one image per forward pass.
         num_images_per_prompt=1,
         return_dict=False,
     )
