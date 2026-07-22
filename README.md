@@ -127,6 +127,100 @@ soft/semi-transparent edges (hair, glass, glow) that background removal cannot.
 `--method matte` uses BiRefNet background removal instead; it is used
 automatically for `--init` decomposition and for `--mode layers`.
 
+### Region-locked editing (`--mask`)
+
+`--mask` says which pixels an edit may touch: **white = may change, black = kept
+byte-for-byte**. Both editing backends honour it, in the way that suits them:
+
+```bash
+# sd: inpainting. Redraw only the masked region.
+imggen sd -i base.png -M cloth.png -p "wearing a navy sailor uniform" -o dressed.png
+
+# qwen-image-edit: crop the mask region, edit that, blend it back.
+imggen qwen-image-edit -i base.png -M face.png -p "make her smile" -o smiling.png
+```
+
+Two details do the actual work:
+
+- **The restore is in pixel space.** Latent masking alone still round-trips the
+  whole canvas through the VAE, which shifts "unchanged" pixels by a few levels
+  everywhere. Every masked run finishes by putting the original back wherever
+  the mask is black, so those pixels are *identical*, not merely similar.
+- **Qwen edits a crop, not the canvas.** Qwen-Image-Edit re-frames whatever you
+  hand it — on a full-body image it moves the head a few pixels and rescales it a
+  percent or two, however firmly the prompt says not to. Cropping to the mask
+  pins the geometry to the crop box. `--width`/`--height` set the resolution the
+  crop is worked at (default: long side scaled to 768).
+
+`--mask-grow N` dilates (or erodes, if negative) the mask first; `--mask-blur N`
+feathers its edge (default 4 px).
+
+Over a remote (`imggen remote set`) the mask is uploaded alongside `--init` and
+the composite happens on the server, so the result is byte-identical to a local
+run. A server predating `--mask` would drop the field and silently edit the
+whole image, so the client checks `/health` first and refuses — update the
+server, or pass `--local`.
+
+### Character variants as layers (`imggen parts`)
+
+Building a character's outfit and expression variants as *layers over one fixed
+base body*, so N outfits and M expressions cost N+M generations and combine into
+N×M results:
+
+```bash
+# 1. One plain base body. Everything else is defined relative to it.
+imggen sd -p "1girl, plain white underwear, neutral expression, ..." -W 832 -H 1216 -o base.png
+
+# 2. Split it into part layers, then turn those into masks.
+imggen see-through --method decompose -i base.png -o base.psd
+imggen parts masks base.psd -i base.png -o masks/      # -> base_cloth.png, base_face.png
+
+# 3. Outfits: inpaint inside the clothing mask. The head cannot move.
+imggen sd -i base.png -M masks/base_cloth.png -p "... wearing a red hoodie ..." -o hoodie.png
+
+# 4. Lift the outfit off as a reusable RGBA layer.
+imggen parts extract base.png hoodie.png -o layer_hoodie.png
+
+# 5. Expressions: masked Qwen edit, once, against the base.
+imggen qwen-image-edit -i base.png -M masks/base_face.png -p "make her smile" -o smile.png
+imggen parts extract base.png smile.png -o layer_smile.png -M masks/base_face.png
+
+# 6. Stack them, bottom-up.
+imggen parts compose base.png layer_hoodie.png layer_smile.png -o hoodie_smiling.png
+```
+
+- **The part layers are used as regions, never as pixels.** Do not try to stack a
+  decompose PSD back into the original: See-through's own loader discards any
+  part that lives only in the bottom or right 10% of the canvas, so the shoes go
+  missing. `parts masks` reads the layers purely to derive the two masks, and
+  emits them in the *original image's* coordinates (the PSD is a square
+  letterbox).
+- **`--fit wide` (default) vs `--fit tight`.** Wide lets the clothing mask cover
+  everything below the neck, background included, so bell skirts and flared
+  coats have room; the background inside it does get repainted, and
+  `parts extract` drops it again by intersecting with the subject's alpha. Tight
+  keeps the mask on the silhouette and leaves the background alone, at the cost
+  of clamping voluminous outfits.
+- **`parts extract` differences the variant against the base.** The masked
+  inpaint path guarantees they are byte-identical outside the mask, so the
+  difference *is* the garment — no second decomposition. `--no-matte` skips the
+  matting step for a `--fit tight` variant, where the background never changed.
+  For a **soft-edged** edit pass `-M` with the mask that made it: the alpha is
+  then the mask itself. A threshold-derived alpha is hard 0/255 and would
+  overwrite at full strength where the edit was a partial blend — which is
+  exactly what a feathered face mask is.
+- **`parts` runs client-side**, on the images and the PSD you already have —
+  only the generating steps go to a remote. The one model it touches is
+  BiRefNet, in `parts extract`'s matting; that falls back to CPU when there is
+  no GPU (slower, still fine), and `--no-matte` / `-M` skip it entirely.
+- **Limits.** Clothing cannot be drawn over hair the mask protects, so hoods and
+  scarves that should sit in front of the hair need their own mask; the base has
+  no cast shadows; and an expression patch changes eyes/brows/mouth, not the
+  angle of the head.
+- For mix-and-match (this top, that skirt), `see-through --method decompose
+  --parts all` on a dressed variant splits the garments into `topwear` /
+  `bottomwear` / `legwear` / `footwear` layers instead.
+
 ### Remote execution (`imggen serve` / `imggen remote`)
 
 Run the heavy generation on a GPU box and drive it from any other machine. The

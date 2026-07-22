@@ -12,7 +12,8 @@ only when actually serving — never on the light command / completion path.
 Endpoints:
 
 * ``GET  /health``   — liveness + device/version info (no auth; used to probe).
-* ``POST /generate`` — a JSON ``{request, init_image?, init_name?, stream?}``
+* ``POST /generate`` — a JSON ``{request, init_image?, init_name?,
+  mask_image?, mask_name?, stream?}``
   body; runs the backend and returns ``{results: [{image, meta, hint, psd?}, ...]}``
   with each image as a base64 PNG (and, for ``see-through --method decompose``,
   the layered document as a base64 ``psd``). Requires the bearer token when
@@ -91,6 +92,10 @@ def _make_handler(api_key: str | None):
                     "version": __version__,
                     "device": describe(),
                     "kinds": list(KINDS) + ["see-through"],
+                    # Request features this build understands. A client checks
+                    # this before sending something an older server would drop
+                    # silently (see remote._require_features).
+                    "features": ["mask"],
                 })
             elif path == "/models":
                 # The presets this host would resolve --model against, so a remote
@@ -171,20 +176,27 @@ def _run_payload(payload: dict, on_step=None) -> list[dict]:
     from . import pipelines
 
     data = dict(payload.get("request") or {})
-    tmp_init: str | None = None
+    tmp_files: list[str] = []
     try:
-        if payload.get("init_image"):
-            suffix = os.path.splitext(payload.get("init_name") or "")[1] or ".png"
-            fd, tmp_init = tempfile.mkstemp(prefix="imggen_init_", suffix=suffix)
+        # Client-side image paths (--init, --mask) arrive as base64; rehydrate
+        # each to a temp file and point the request at it.
+        for field in ("init", "mask"):
+            blob = payload.get(f"{field}_image")
+            if not blob:
+                continue
+            suffix = os.path.splitext(payload.get(f"{field}_name") or "")[1] or ".png"
+            fd, tmp = tempfile.mkstemp(prefix=f"imggen_{field}_", suffix=suffix)
             with os.fdopen(fd, "wb") as fh:
-                fh.write(base64.b64decode(payload["init_image"]))
-            data["init"] = tmp_init
+                fh.write(base64.b64decode(blob))
+            tmp_files.append(tmp)
+            data[field] = tmp
         req = _build_request(data)
         results = pipelines.run(req, on_step=on_step)
         return [_encode_result(img, meta, hint) for img, meta, hint in results]
     finally:
-        if tmp_init and os.path.exists(tmp_init):
-            os.unlink(tmp_init)
+        for tmp in tmp_files:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
 
 def _build_request(data: dict) -> GenRequest:

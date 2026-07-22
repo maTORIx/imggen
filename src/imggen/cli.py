@@ -134,6 +134,19 @@ BatchSize = typer.Option(
          "layerdiffuse.",
 )
 Init = typer.Option(None, "--init", "-i", help="Input image (img2img / edit / see-through base).")
+Mask = typer.Option(
+    None, "--mask", "-M",
+    help="Region-lock the edit to this mask (white = may change, black = kept "
+         "byte-for-byte). Needs --init. See `imggen parts masks` to build one "
+         "from a decompose PSD.",
+)
+MaskGrow = typer.Option(
+    None, "--mask-grow",
+    help="Dilate (+) or erode (-) the mask by N px before use.",
+)
+MaskBlur = typer.Option(
+    None, "--mask-blur", help="Feather the mask edge by N px (default 4).",
+)
 Strength = typer.Option(None, "--strength", min=0.0, max=1.0, help="img2img denoising strength (default 0.8).")
 Device = typer.Option(None, "--device", help="cuda / mps / cpu (auto if unset).")
 Dtype = typer.Option(None, "--dtype", help="bf16 / fp16 / fp32 (auto if unset).")
@@ -255,6 +268,9 @@ def sd(
     num: int = Num,
     batch_size: int = BatchSize,
     init: Optional[str] = Init,
+    mask: Optional[str] = Mask,
+    mask_grow: Optional[int] = MaskGrow,
+    mask_blur: Optional[float] = MaskBlur,
     strength: Optional[float] = Strength,
     device: Optional[str] = Device,
     dtype: Optional[str] = Dtype,
@@ -267,16 +283,23 @@ def sd(
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
 ):
-    """Stable Diffusion (SD1.5 / SDXL / SD3.5, auto-detected)."""
+    """Stable Diffusion (SD1.5 / SDXL / SD3.5, auto-detected).
+
+    With --init it runs img2img; adding --mask makes it inpainting, redrawing
+    only the masked region and restoring the rest of the image byte-for-byte.
+    """
     if save or alias is not None:
         return _save_preset(ctx, "sd", model, alias, desc)
     _require(prompt, "--prompt")
+    if mask and not init:
+        raise typer.BadParameter("--mask needs an image to edit (--init/-i)", param_hint="--mask")
     _go(
         GenRequest(
             kind="sd", prompt=prompt, negative=negative, prompt_prefix=prompt_prefix,
             prompt_suffix=prompt_suffix, model=model, width=width,
             height=height, steps=steps, cfg=cfg, sampler=sampler, seed=seed, num=num,
-            batch_size=batch_size, init=init, strength=strength, device=device,
+            batch_size=batch_size, init=init, mask=mask, mask_grow=mask_grow,
+            mask_blur=mask_blur, strength=strength, device=device,
             dtype=dtype, offload=offload, hf_token=hf_token,
         ),
         out, metadata, local, preview,
@@ -332,6 +355,9 @@ def qwen_image_edit(
     ctx: typer.Context,
     prompt: Optional[str] = PromptOpt,
     init: Optional[str] = Init,
+    mask: Optional[str] = Mask,
+    mask_grow: Optional[int] = MaskGrow,
+    mask_blur: Optional[float] = MaskBlur,
     negative: Optional[str] = Negative,
     prompt_prefix: Optional[str] = PromptPrefix,
     prompt_suffix: Optional[str] = PromptSuffix,
@@ -356,14 +382,23 @@ def qwen_image_edit(
     alias: Optional[str] = Alias,
     desc: Optional[str] = Desc,
 ):
-    """Qwen-Image-Edit: instruction-based editing of an input image."""
+    """Qwen-Image-Edit: instruction-based editing of an input image.
+
+    With --mask the edit is confined to the masked region: the crop around it is
+    what reaches the model (so the framing cannot drift), and the result is
+    blended back through the mask. Use it for expression changes on a character
+    whose body must stay put; without a mask, Qwen re-frames the whole image.
+    --width/--height then set the resolution the crop is worked at (default: its
+    long side scaled to 768).
+    """
     if save or alias is not None:
         return _save_preset(ctx, "qwen-image-edit", model, alias, desc)
     _require(prompt, "--prompt")
     _require(init, "--init")
     _go(
         GenRequest(
-            kind="qwen-image-edit", prompt=prompt, init=init, negative=negative,
+            kind="qwen-image-edit", prompt=prompt, init=init, mask=mask,
+            mask_grow=mask_grow, mask_blur=mask_blur, negative=negative,
             prompt_prefix=prompt_prefix, prompt_suffix=prompt_suffix,
             model=model, width=width, height=height, steps=steps, cfg=cfg,
             sampler=sampler, seed=seed, num=num,
@@ -436,6 +471,154 @@ def see_through(
         ),
         out, metadata, local, preview,
     )
+
+
+# --- layer workflow (`imggen parts`) ------------------------------------
+
+parts_app = typer.Typer(
+    help="Build character variants as layers over one fixed base body.",
+    no_args_is_help=True,
+)
+app.add_typer(parts_app, name="parts")
+
+
+def _image_size(path: str | None):
+    if not path:
+        return None
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return im.size
+
+
+@parts_app.command("masks")
+def parts_masks(
+    psd: str = typer.Argument(..., help="PSD from `see-through --method decompose`."),
+    init: Optional[str] = typer.Option(
+        None, "--init", "-i",
+        help="The original image the PSD was made from. The PSD is a square "
+             "letterbox, so this is what puts the masks back in image coordinates.",
+    ),
+    out: str = typer.Option(".", "--out", "-o", help="Directory to write the masks into."),
+    fit: str = typer.Option(
+        "wide", "--fit",
+        help="Clothing mask extent: wide = everything below the neck including "
+             "the background (voluminous outfits fit; the background is "
+             "repainted, and `parts extract` drops it again) | tight = the "
+             "silhouette dilated by --dilate (background untouched).",
+    ),
+    dilate: Optional[int] = typer.Option(
+        None, "--dilate",
+        help="--fit tight: px a garment may spill past the silhouette (default 26).",
+    ),
+    guard: Optional[int] = typer.Option(
+        None, "--guard", help="Keep-out margin around head and visible hair, px (default 6)."
+    ),
+    prefix: Optional[str] = typer.Option(None, "--prefix", help="Output filename stem (default: the PSD's)."),
+):
+    """Turn a decompose PSD into the clothing and face masks.
+
+    Writes <stem>_cloth.png, <stem>_face.png and <stem>_masks.json.
+    Feed the first to `imggen sd --mask` to dress the character and the second to
+    `imggen qwen-image-edit --mask` to change its expression; because both leave
+    everything outside their mask byte-for-byte identical, the two sets of
+    variants combine freely.
+    """
+    from . import parts as parts_mod
+
+    if fit not in ("wide", "tight"):
+        raise typer.BadParameter("fit must be 'wide' or 'tight'")
+    kwargs = {"fit": fit}
+    if dilate is not None:
+        kwargs["dilate"] = dilate
+    if guard is not None:
+        kwargs["guard"] = guard
+    try:
+        paths, info = parts_mod.write_masks(
+            psd, out, size=_image_size(init), prefix=prefix, **kwargs
+        )
+    except parts_mod.PartsError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    typer.secho(f"{len(info['layers'])} layers -> masks at {info['size'][0]}x{info['size'][1]}", fg=typer.colors.BLUE)
+    typer.secho(f"  cloth ({fit}): {paths['cloth']}", fg=typer.colors.GREEN)
+    typer.secho(f"  face:          {paths['face']}", fg=typer.colors.GREEN)
+    box = info["face_box"]
+    typer.echo(f"  face crop box: ({box[0]},{box[1]})-({box[2]},{box[3]})")
+    typer.secho(f"  {paths['info']}", fg=typer.colors.BRIGHT_BLACK)
+
+
+@parts_app.command("extract")
+def parts_extract(
+    base: str = typer.Argument(..., help="The base body the variant was painted onto."),
+    variant: str = typer.Argument(..., help="A variant produced with `sd --init base --mask ...`."),
+    out: str = typer.Option(..., "--out", "-o", help="Output RGBA layer (PNG)."),
+    recon: Optional[str] = typer.Option(
+        None, "--recon", help="Also write base+layer, to eyeball the round-trip."
+    ),
+    mask: Optional[str] = typer.Option(
+        None, "--mask", "-M",
+        help="Use this mask as the layer's alpha instead of deriving one from "
+             "the difference. Pass the mask the variant was generated with "
+             "whenever the edit has soft edges — an expression patch above all.",
+    ),
+    threshold: int = typer.Option(8, "--threshold", help="Per-channel difference that counts as changed."),
+    matte: bool = typer.Option(
+        True, "--matte/--no-matte",
+        help="Confine the layer to the subject (BiRefNet). Keeps a --fit wide "
+             "variant's repainted background out of the layer; skip it for a "
+             "--fit tight variant, where the background never changed. Ignored "
+             "with --mask.",
+    ),
+    device: Optional[str] = Device,
+    hf_token: Optional[str] = HfToken,
+):
+    """Lift the difference between a base body and a variant into an RGBA layer.
+
+    The masked inpaint path leaves everything outside its mask byte-identical, so
+    the difference *is* the garment — no second decomposition needed. Stack the
+    result back with `imggen parts compose`.
+
+    For a soft-edged edit pass `--mask` (the same one that made the variant): a
+    threshold-derived alpha is hard 0/255 and would overwrite at full strength
+    where the edit was a partial blend.
+    """
+    from . import parts as parts_mod
+
+    stats = parts_mod.extract_layer(
+        base, variant, out, recon_path=recon, threshold=threshold,
+        matte=matte, mask_path=mask, device=device, token=hf_token,
+    )
+    typer.secho(f"layer: {out}", fg=typer.colors.GREEN)
+    shape = (
+        f"alpha from {mask}" if mask else
+        f"{stats['components']} component(s), {stats['holes_filled']} hole(s) filled"
+    )
+    typer.echo(f"  covers {stats['coverage'] * 100:.1f}% of the canvas, {shape}")
+    typer.echo(
+        f"  inside the layer, vs the variant: max {stats['recon_max']}, mean {stats['recon_mean']:.2f}"
+    )
+    typer.echo(
+        f"  outside it, vs the base:          max {stats['base_max']}, mean {stats['base_mean']:.2f}"
+    )
+
+
+@parts_app.command("compose")
+def parts_compose(
+    base: str = typer.Argument(..., help="Base image (the plain body)."),
+    layers: list[str] = typer.Argument(..., help="RGBA layers to stack, bottom-up."),
+    out: str = typer.Option(..., "--out", "-o", help="Output image."),
+):
+    """Stack RGBA layers over a base image.
+
+    Order is bottom-up, so put the garment before the expression patch: the face
+    has to end up in front of a collar, not behind it.
+    """
+    from . import parts as parts_mod
+
+    parts_mod.compose(base, layers, out)
+    typer.secho(f"composed {len(layers)} layer(s) -> {out}", fg=typer.colors.GREEN)
 
 
 # --- catalog install (`imggen pull`) ------------------------------------

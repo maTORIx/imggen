@@ -27,7 +27,7 @@ from . import manifest as mf
 # Generation flags that may be recorded into a preset's ``defaults``.
 SAVEABLE = (
     "steps", "cfg", "width", "height", "negative", "strength", "sampler",
-    "prompt_prefix", "prompt_suffix",
+    "prompt_prefix", "prompt_suffix", "mask_grow", "mask_blur",
 )
 
 _REPO_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")

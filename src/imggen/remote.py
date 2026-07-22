@@ -244,7 +244,8 @@ def run(req: GenRequest, on_progress=None):
 
     # Fast reachability check so a misconfigured / down server fails quickly
     # rather than blocking on the (possibly long) generation request.
-    ping(timeout=5)
+    health = ping(timeout=5)
+    _require_features(req, health)
 
     payload = _encode_request(req)
     payload["stream"] = True
@@ -303,18 +304,45 @@ def _read_stream(resp, on_progress) -> dict:
     return final
 
 
+#: Request fields naming a client-side file that has to travel as bytes. The
+#: wire keys stay ``<field>_image`` / ``<field>_name`` for compatibility with the
+#: original init-only protocol.
+_INLINE_FILES = ("init", "mask")
+
+
+def _require_features(req: GenRequest, health: dict) -> None:
+    """Refuse a request the server is too old to honour.
+
+    A server built before a request field existed drops it silently (its
+    ``_build_request`` filters unknown keys), so a masked run there would come
+    back as an ordinary unmasked edit — plausible-looking output that quietly
+    ignored the region lock. Better to say so. ``/health`` advertises what the
+    server understands; an older one lists nothing, which is the case to catch.
+    """
+    if not req.mask:
+        return
+    if "mask" in (health.get("features") or []):
+        return
+    raise RemoteError(
+        "the remote imggen is too old to honour --mask (it would silently edit "
+        "the whole image instead). Update the server, or pass --local."
+    )
+
+
 def _encode_request(req: GenRequest) -> dict:
-    """Serialize ``req`` for the wire, shipping the ``--init`` image inline."""
+    """Serialize ``req`` for the wire, shipping local image paths inline."""
     data = asdict(req)
     payload: dict = {"request": data}
-    init = data.get("init")
-    if init:
-        p = Path(init)
+    for field in _INLINE_FILES:
+        value = data.get(field)
+        if not value:
+            continue
+        p = Path(value)
         if not p.is_file():
-            raise RemoteError(f"init image not found: {init}")
-        payload["init_image"] = base64.b64encode(p.read_bytes()).decode()
-        payload["init_name"] = p.name
-        data["init"] = None  # the server writes a temp file and fills this in
+            raise RemoteError(f"{field} image not found: {value}")
+        payload[f"{field}_image"] = base64.b64encode(p.read_bytes()).decode()
+        payload[f"{field}_name"] = p.name
+        data[field] = None  # the server writes a temp file and fills this in
     return payload
 
 
@@ -328,10 +356,12 @@ def _decode_results(req: GenRequest, data: dict):
         image = Image.open(BytesIO(base64.b64decode(item["image"])))
         image.load()
         meta = item.get("meta") or {}
-        # The server records its own temp path for the init image; show the
-        # client's original path in the saved metadata instead.
-        if req.init and meta.get("init"):
-            meta["init"] = req.init
+        # The server records its own temp paths for the inlined images; show the
+        # client's original paths in the saved metadata instead.
+        for field in _INLINE_FILES:
+            local = getattr(req, field, None)
+            if local and meta.get(field):
+                meta[field] = local
         # ``see-through --method decompose`` ships a whole layered document
         # alongside its preview image. Rehydrate it to a local temp file and
         # point ``_psd_path`` at it, so the runner saves it exactly as it does

@@ -79,6 +79,8 @@ Only `source` is required; every other key is optional.
     "negative": " ",
     "strength": 0.8,
     "sampler": "euler",
+    "mask_grow": 0,          // --mask: dilate (+) / erode (-) the mask, px
+    "mask_blur": 4.0,        // --mask: feather the mask edge, px
     "prompt_prefix": "masterpiece, best quality",  // prepended to --prompt
     "prompt_suffix": "cinematic lighting"          // appended to --prompt
   }

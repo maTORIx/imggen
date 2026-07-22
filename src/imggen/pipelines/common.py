@@ -156,6 +156,100 @@ def load_init_image(path: str) -> Image.Image:
     return Image.open(path).convert("RGB")
 
 
+# --- region-locked editing (--mask) -------------------------------------
+#
+# A mask answers one question: which pixels is this run allowed to change?
+# White = editable, black = keep. Two things make it actually hold:
+#
+# 1. Every masked path ends with :func:`composite_masked`, which restores the
+#    untouched pixels *in pixel space*. Latent-level masking alone is not
+#    enough — the VAE round-trip shifts "unchanged" pixels by a few levels
+#    across the whole canvas, which is exactly what stops one expression patch
+#    from being reusable across outfit variants.
+# 2. Backends whose model re-frames the subject (Qwen-Image-Edit rescales and
+#    shifts the head by a few px even when told not to) edit a *crop* of the
+#    mask region instead of the full canvas, so the geometry is pinned by the
+#    crop box rather than by the model's goodwill.
+
+def load_mask(path: str, size=None, grow: int = 0, blur: float = 0.0) -> Image.Image:
+    """Load an ``L`` mask, optionally resized to *size*, grown and feathered.
+
+    ``grow`` dilates (positive) or erodes (negative) by that many pixels before
+    feathering — handy to give a garment room to spill past the silhouette, or
+    to pull a face mask in off the hairline.
+    """
+    mask = Image.open(path).convert("L")
+    if size is not None and mask.size != tuple(size):
+        mask = mask.resize(tuple(size), Image.LANCZOS)
+    if grow:
+        import cv2  # rank filters in PIL are O(r^2) per pixel; cv2 is separable
+        import numpy as np
+
+        r = abs(int(grow))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2 + 1, r * 2 + 1))
+        op = cv2.dilate if grow > 0 else cv2.erode
+        mask = Image.fromarray(op(np.asarray(mask), kernel))
+    if blur:
+        from PIL import ImageFilter
+
+        mask = mask.filter(ImageFilter.GaussianBlur(float(blur)))
+    return mask
+
+
+def composite_masked(original: Image.Image, result: Image.Image, mask: Image.Image) -> Image.Image:
+    """Blend *result* over *original* through *mask*, in pixel space.
+
+    Where the mask is black the output is *original* byte-for-byte, which is the
+    whole point: it is what lets a face patch made against one variant be
+    dropped onto another without the rest of the image drifting.
+    """
+    base = original.convert("RGB")
+    top = result.convert("RGB")
+    if top.size != base.size:
+        top = top.resize(base.size, Image.LANCZOS)
+    if mask.size != base.size:
+        mask = mask.resize(base.size, Image.LANCZOS)
+    return Image.composite(top, base, mask)
+
+
+#: Padding around a mask's bounding box when a backend crops to it. Generous on
+#: purpose: the model needs the whole head in frame to draw a coherent
+#: expression, even though only the masked pixels of what it returns are kept.
+#: ``imggen parts masks`` reports the box computed with this same value, so the
+#: two must not drift apart.
+MASK_CROP_PAD = 0.6
+
+
+def mask_bbox(mask: Image.Image, pad: float = MASK_CROP_PAD, align: int = 8, threshold: int = 8):
+    """Square-ish crop box around the white region of *mask*, padded by *pad*.
+
+    Returned as a PIL ``(left, top, right, bottom)`` clamped to the mask bounds,
+    with each side snapped to a multiple of *align*. Raises when the mask is
+    empty — a mask with nothing in it is a mistake worth reporting, not a
+    silently-skipped edit.
+    """
+    box = mask.point(lambda v: 255 if v > threshold else 0).getbbox()
+    if box is None:
+        raise ValueError("mask is empty (no pixels above the threshold)")
+    x1, y1, x2, y2 = box
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    half = max(x2 - x1, y2 - y1) / 2 * (1.0 + max(pad, 0.0))
+    w, h = mask.size
+    left = max(0, int(cx - half) // align * align)
+    top = max(0, int(cy - half) // align * align)
+    right = min(w, -(-int(cx + half) // align) * align)
+    bottom = min(h, -(-int(cy + half) // align) * align)
+    return left, top, right, bottom
+
+
+def mask_settings(req: GenRequest, defaults: dict, grow: int = 0, blur: float = 4.0):
+    """Resolve ``--mask-grow`` / ``--mask-blur`` through the usual precedence."""
+    return (
+        int(setting(req.mask_grow, "mask_grow", defaults, grow)),
+        float(setting(req.mask_blur, "mask_blur", defaults, blur)),
+    )
+
+
 def setting(cli_value, key: str, defaults: dict, fallback):
     """Resolve one generation setting by precedence.
 

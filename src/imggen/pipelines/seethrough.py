@@ -142,6 +142,20 @@ def _matte(model, img: Image.Image, device: str) -> Image.Image:
     return mask
 
 
+def foreground_alpha(img: Image.Image, device: str | None = None, token: str | None = None) -> Image.Image:
+    """Return the subject's alpha for *img* as an ``L`` mask of the same size.
+
+    The same BiRefNet matting the ``matte`` method uses, exposed for callers that
+    only want the silhouette — notably ``imggen parts extract``, which uses it to
+    keep a difference-derived garment layer from picking up background noise.
+    """
+    from ..device import resolve_device
+
+    dev = resolve_device(device)
+    model = _load_birefnet(dev, GenRequest(kind="see-through", hf_token=token))
+    return _matte(model, img, dev)
+
+
 def _apply_alpha(img: Image.Image, alpha: Image.Image) -> Image.Image:
     rgba = img.convert("RGBA")
     rgba.putalpha(alpha)

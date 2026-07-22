@@ -20,6 +20,11 @@ from . import common
 
 DEFAULTS = {"steps": 50, "cfg": 4.0}
 
+#: Long side (px) the masked crop is worked at when ``--width``/``--height`` are
+#: not given. Qwen-Image-Edit was trained around ~1M-pixel inputs, so a small
+#: face crop has to be scaled up or it comes back soft.
+_MASK_WORK_PX = 768
+
 # All-in-one (ComfyUI) checkpoints bundle the transformer under this prefix
 # alongside the VAE and text encoder in the same ``.safetensors`` file.
 _AIO_PREFIX = "model.diffusion_model."
@@ -199,6 +204,42 @@ def generate(req: GenRequest, on_step=None):
     return results
 
 
+def _work_size(crop_size, width, height, align: int = 16):
+    """Resolution to run a masked crop at, snapped to *align*.
+
+    ``--width``/``--height`` win when given; otherwise the crop is scaled so its
+    long side is :data:`_MASK_WORK_PX`.
+    """
+    cw, ch = crop_size
+    if width or height:
+        w = width or round(cw * height / ch)
+        h = height or round(ch * width / cw)
+    else:
+        scale = _MASK_WORK_PX / max(cw, ch)
+        w, h = round(cw * scale), round(ch * scale)
+    snap = lambda v: max(align, int(round(v / align)) * align)  # noqa: E731
+    return snap(w), snap(h)
+
+
+def _masked_crop(req: GenRequest, init_image, defaults, width, height):
+    """Set up the region-locked edit: ``(mask, box, work_image, work_size)``.
+
+    Qwen-Image-Edit re-frames whatever it is given — on a full-body image it
+    moves the head by several pixels and rescales it a couple of percent, which
+    is enough to make an expression patch built against the base body unusable
+    on an outfit variant. Editing a fixed crop instead pins the geometry to the
+    crop box, and the surrounding canvas never reaches the model at all.
+    """
+    grow, blur = common.mask_settings(req, defaults)
+    mask = common.load_mask(req.mask, init_image.size, grow=grow, blur=blur)
+    box = common.mask_bbox(mask, pad=common.MASK_CROP_PAD, align=16)
+    crop = init_image.crop(box)
+    size = _work_size(crop.size, width, height)
+    from PIL import Image
+
+    return mask, box, crop.resize(size, Image.LANCZOS), size
+
+
 def generate_edit(req: GenRequest, on_step=None):
     from diffusers import QwenImageEditPlusPipeline
 
@@ -231,8 +272,30 @@ def generate_edit(req: GenRequest, on_step=None):
     init_image = common.load_init_image(req.init)
     gens = common.generators(seeds, device)
 
+    mask = box = None
+    if req.mask:
+        mask, box, edit_image, (width, height) = _masked_crop(req, init_image, d, width, height)
+        typer.secho(
+            f"masked edit: crop {box[2] - box[0]}x{box[3] - box[1]} at "
+            f"({box[0]},{box[1]}) -> working at {width}x{height}",
+            fg=typer.colors.BLUE,
+        )
+        # The crop is what pins the geometry. Once it covers most of the canvas
+        # there is nothing left to pin against and the model is as free to
+        # re-frame inside it as it would be on the full image.
+        area = (box[2] - box[0]) * (box[3] - box[1]) / (init_image.width * init_image.height)
+        if area > 0.8:
+            typer.secho(
+                f"note: the mask spans {area * 100:.0f}% of the image, so the crop "
+                "barely constrains the framing — expect the drift an unmasked edit "
+                "has (the mask still decides which pixels are kept).",
+                fg=typer.colors.YELLOW,
+            )
+    else:
+        edit_image = init_image
+
     kwargs = dict(
-        image=init_image,
+        image=edit_image,
         prompt=prompt,
         negative_prompt=negative or " ",
         num_inference_steps=steps,
@@ -252,6 +315,8 @@ def generate_edit(req: GenRequest, on_step=None):
         call_kwargs["num_images_per_prompt"] = len(seed_chunk)
         common.attach_progress(call_kwargs, pipe, on_step, base, len(seeds))
         images = pipe(generator=gen_chunk, **call_kwargs).images
+        if mask is not None:
+            images = [_paste_back(init_image, img, box, mask) for img in images]
         for seed, image in zip(seed_chunk, images):
             results.append(
                 (
@@ -267,8 +332,19 @@ def generate_edit(req: GenRequest, on_step=None):
                         "seed": seed,
                         "size": f"{image.width}x{image.height}",
                         **({"sampler": sampler} if sampler else {}),
+                        **({"mask": req.mask} if mask is not None else {}),
                     },
                     None,
                 )
             )
     return results
+
+
+def _paste_back(init_image, edited, box, mask):
+    """Scale *edited* back into *box* on the original canvas and blend by *mask*."""
+    from PIL import Image
+
+    crop_size = (box[2] - box[0], box[3] - box[1])
+    patched = init_image.copy()
+    patched.paste(edited.convert("RGB").resize(crop_size, Image.LANCZOS), box[:2])
+    return common.composite_masked(init_image, patched, mask)

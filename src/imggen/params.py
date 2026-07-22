@@ -27,6 +27,11 @@ class GenRequest:
 
     init: str | None = None  # input image path (img2img / edit / see-through)
 
+    # region-locked editing: only the white pixels of `mask` may change
+    mask: str | None = None  # mask image path (white = editable, black = keep)
+    mask_grow: int | None = None  # dilate (+) / erode (-) the mask, px
+    mask_blur: float | None = None  # feather the mask edge, px
+
     # see-through specific
     mode: str = "transparent"  # "transparent" | "layers"
     method: str = "auto"  # "auto" | "layerdiffuse" | "matte" | "decompose"

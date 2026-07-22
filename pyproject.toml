@@ -18,6 +18,7 @@ dependencies = [
     "pillow>=10.0",
     "numpy",
     "opencv-python-headless",
+    "psd-tools>=1.10",   # read decompose PSDs in `imggen parts masks`
     "einops",
     "timm",              # required by BiRefNet (see-through matting)
     "kornia",            # required by BiRefNet (see-through matting)
