@@ -779,6 +779,44 @@ def serve(
     run_server(host, port, api_key)
 
 
+setup_app = typer.Typer(
+    help="Provision backends that need their own isolated environment.",
+    no_args_is_help=True,
+)
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command("see-through")
+def setup_see_through(
+    force: bool = typer.Option(False, "--force", help="Delete and rebuild the checkout and venv."),
+    status: bool = typer.Option(False, "--status", help="Only report where it lives and whether it is ready."),
+):
+    """Build the isolated env `see-through --method decompose` runs in.
+
+    Clones the See-through checkout, creates a venv, and installs its pinned
+    dependencies under `~/.cache/imggen/seethrough/` (a few GB, mostly torch).
+    The first decompose run does this automatically; use this command to warm it
+    up ahead of time, retry after a failed install, or `--force` a rebuild.
+    """
+    from . import seethrough_env as st_env
+
+    if status:
+        info = st_env.describe()
+        mark = lambda ok: typer.style("ok" if ok else "missing",  # noqa: E731
+                                      fg=typer.colors.GREEN if ok else typer.colors.RED)
+        typer.echo(f"repo:   {info['repo']}  [{mark(info['repo_ok'])}]")
+        typer.echo(f"python: {info['python']}  [{mark(info['python_ok'])}]")
+        if not info["ready"]:
+            typer.secho("not ready — run `imggen setup see-through`", fg=typer.colors.YELLOW)
+        raise typer.Exit(0 if info["ready"] else 1)
+
+    try:
+        st_env.ensure(force=force)
+    except st_env.SetupError as exc:
+        typer.secho(f"setup failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+
 remote_app = typer.Typer(
     help="Configure a remote imggen serve endpoint (set/show/status/clear).",
     no_args_is_help=True,

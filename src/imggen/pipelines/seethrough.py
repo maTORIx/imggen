@@ -13,10 +13,11 @@ Three engines:
   (hair / eyes / mouth / nose / ears / face / clothing, with occluded regions
   inpainted) exported as a single layered ``.psd``. Powered by the See-through
   model (Lin et al., SIGGRAPH 2026), which pins an incompatible diffusers/
-  transformers stack, so it runs in an **isolated venv driven as a subprocess**
-  (see :func:`_seethrough_env`). Works over the remote daemon too — the PSD
-  travels as bytes in the result payload — provided the *server* has that
-  isolated install.
+  transformers stack, so it runs in an **isolated venv driven as a subprocess**.
+  That venv is provisioned automatically on first use (see
+  :mod:`imggen.seethrough_env`), like any other first-run download. Works over
+  the remote daemon too — the PSD travels as bytes in the result payload — in
+  which case it is the *server* that provisions and holds the install.
 
 Modes:
 
@@ -169,28 +170,27 @@ def _inpaint_background(img: Image.Image, alpha: Image.Image) -> Image.Image:
 # ``$IMGGEN_SEETHROUGH_REPO`` / ``$IMGGEN_SEETHROUGH_PYTHON``.
 
 
-def _seethrough_home() -> Path:
-    root = os.environ.get("IMGGEN_CACHE")
-    base = Path(root) if root else Path.home() / ".cache" / "imggen"
-    return base / "seethrough"
-
-
 def _seethrough_env() -> tuple[Path, Path]:
-    """Return ``(repo_dir, python_exe)`` for the isolated See-through install."""
-    home = _seethrough_home()
-    repo = Path(os.environ.get("IMGGEN_SEETHROUGH_REPO") or home / "repo")
-    py = Path(os.environ.get("IMGGEN_SEETHROUGH_PYTHON") or home / "venv" / "bin" / "python")
-    script = repo / "inference" / "scripts" / "inference_psd.py"
-    if not script.exists() or not py.exists():
-        raise RuntimeError(
-            "see-through --method decompose needs the isolated See-through install.\n"
-            f"  expected repo:   {repo}\n"
-            f"  expected python: {py}\n"
-            "Set $IMGGEN_SEETHROUGH_REPO / $IMGGEN_SEETHROUGH_PYTHON to point at a\n"
-            "See-through checkout (https://github.com/shitagaki-lab/see-through) and\n"
-            "its inference venv."
-        )
-    return repo, py
+    """Return ``(repo_dir, python_exe)``, provisioning the install if it is absent.
+
+    The isolated venv is imggen's own plumbing, not something the user should
+    have to assemble; the first decompose run builds it the same way a first
+    ``sd`` run downloads weights. Set ``$IMGGEN_SEETHROUGH_AUTOSETUP=0`` to make
+    a missing environment an error instead (for a locked-down host, or when the
+    checkout is managed by something else).
+    """
+    from .. import seethrough_env as st_env
+
+    if st_env.is_ready() or os.environ.get("IMGGEN_SEETHROUGH_AUTOSETUP", "1") != "0":
+        return st_env.ensure()
+    info = st_env.describe()
+    raise RuntimeError(
+        "see-through --method decompose needs the isolated See-through install, "
+        "and $IMGGEN_SEETHROUGH_AUTOSETUP=0 disables provisioning it.\n"
+        f"  expected repo:   {info['repo']}\n"
+        f"  expected python: {info['python']}\n"
+        "Run `imggen setup see-through` (or unset the variable) to build it."
+    )
 
 
 def _generate_decompose(req: GenRequest, on_step=None):
