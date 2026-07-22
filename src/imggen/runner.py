@@ -26,7 +26,17 @@ def _progress_reporter():
     state = {"active": False}
 
     def report(evt: dict) -> None:
-        if evt.get("event") != "progress":
+        kind = evt.get("event")
+        if kind == "status":
+            # Some backends (see-through --method decompose) run a subprocess
+            # with no per-step callback, so this is the only sign of life the
+            # client gets. A normal run overwrites it with the bar immediately.
+            if tty and evt.get("stage") == "running":
+                stream.write("\r  running on remote ...\033[K")
+                stream.flush()
+                state["active"] = True
+            return
+        if kind != "progress":
             return
         step, total = evt.get("step"), evt.get("total")
         imgs, img = evt.get("images") or 1, (evt.get("image") or 0) + 1

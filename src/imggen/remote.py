@@ -230,7 +230,10 @@ def run(req: GenRequest, on_progress=None):
 
     Returns the same shape as :func:`imggen.pipelines.run`:
     ``[(PIL.Image, metadata dict, path_hint), ...]``. Raises :class:`RemoteError`
-    on any transport / auth / server failure — there is no local fallback.
+    on any transport / auth / server failure — there is no local fallback. A
+    result carrying a layered document (``see-through --method decompose``)
+    arrives as bytes and is written to a client temp file, with
+    ``meta['_psd_path']`` repointed at it so saving is identical to a local run.
 
     ``on_progress(event)`` (optional) is called with each streamed progress /
     status event so the caller can render a live bar; the request asks the server
@@ -329,8 +332,24 @@ def _decode_results(req: GenRequest, data: dict):
         # client's original path in the saved metadata instead.
         if req.init and meta.get("init"):
             meta["init"] = req.init
+        # ``see-through --method decompose`` ships a whole layered document
+        # alongside its preview image. Rehydrate it to a local temp file and
+        # point ``_psd_path`` at it, so the runner saves it exactly as it does
+        # for a local run (it moves the file to --out, consuming the stash).
+        if item.get("psd"):
+            meta["_psd_path"] = _stash_psd(item["psd"])
         results.append((image, meta, item.get("hint")))
     return results
+
+
+def _stash_psd(b64: str) -> str:
+    """Write a base64 PSD payload to a temp file and return its path."""
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="imggen-st-", suffix=".psd")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(base64.b64decode(b64))
+    return path
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:

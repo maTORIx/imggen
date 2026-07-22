@@ -382,7 +382,7 @@ def see_through(
     method: str = typer.Option(
         "auto", "--method",
         help="auto | layerdiffuse (native transparent) | matte (BiRefNet) | "
-             "decompose (part layers → PSD, local-only)",
+             "decompose (part layers → PSD)",
     ),
     init: Optional[str] = Init,
     negative: Optional[str] = Negative,
@@ -418,12 +418,6 @@ def see_through(
         raise typer.BadParameter("method must be 'auto', 'layerdiffuse', 'matte', or 'decompose'")
     if not prompt and not init:
         raise typer.BadParameter("provide --prompt to generate, or --init for an existing image")
-    # decompose shells out to the isolated See-through env on this host; it has no
-    # remote path (the daemon returns images, not a server-local PSD), so pin local.
-    run_local = local
-    if method == "decompose":
-        run_local = True
-        typer.secho("note: decompose runs locally via the isolated See-through env", fg=typer.colors.YELLOW)
     _go(
         GenRequest(
             kind="see-through", prompt=prompt, mode=mode, method=method, init=init,
@@ -432,7 +426,7 @@ def see_through(
             cfg=cfg, sampler=sampler, seed=seed, num=num, batch_size=batch_size,
             device=device, dtype=dtype, offload=offload, hf_token=hf_token,
         ),
-        out, metadata, run_local, preview,
+        out, metadata, local, preview,
     )
 
 

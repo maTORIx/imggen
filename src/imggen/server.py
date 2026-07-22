@@ -13,8 +13,10 @@ Endpoints:
 
 * ``GET  /health``   — liveness + device/version info (no auth; used to probe).
 * ``POST /generate`` — a JSON ``{request, init_image?, init_name?, stream?}``
-  body; runs the backend and returns ``{results: [{image, meta, hint}, ...]}``
-  with each image as a base64 PNG. Requires the bearer token when configured.
+  body; runs the backend and returns ``{results: [{image, meta, hint, psd?}, ...]}``
+  with each image as a base64 PNG (and, for ``see-through --method decompose``,
+  the layered document as a base64 ``psd``). Requires the bearer token when
+  configured.
   With ``stream: true`` the response is instead an NDJSON stream of per-step
   ``{"event": "progress", ...}`` lines followed by a final ``{"event":
   "result", "results": [...]}`` (or ``{"event": "error"}``) line, so a remote
@@ -24,6 +26,7 @@ Endpoints:
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import io
 import json
@@ -191,10 +194,25 @@ def _build_request(data: dict) -> GenRequest:
 
 
 def _encode_result(image, meta: dict, hint) -> dict:
+    # A backend that produced a real multi-layer document (see-through --method
+    # decompose) returns a *server-local* path in meta['_psd_path'], which is
+    # meaningless to the client. Drop the path and ship the bytes instead; the
+    # client rehydrates it into its own temp file (remote._decode_results).
+    psd_path = meta.pop("_psd_path", None)
     buf = io.BytesIO()
     image.save(buf, format="PNG")  # lossless; keeps RGBA for see-through layers
-    return {
+    item = {
         "image": base64.b64encode(buf.getvalue()).decode(),
         "meta": meta,
         "hint": hint,
     }
+    if psd_path:
+        try:
+            with open(psd_path, "rb") as fh:
+                item["psd"] = base64.b64encode(fh.read()).decode()
+        finally:
+            # The client owns the copy now; never leave the stash behind, even
+            # if the read failed.
+            with contextlib.suppress(OSError):
+                os.unlink(psd_path)
+    return item

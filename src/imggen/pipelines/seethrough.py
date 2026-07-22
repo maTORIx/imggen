@@ -14,7 +14,9 @@ Three engines:
   inpainted) exported as a single layered ``.psd``. Powered by the See-through
   model (Lin et al., SIGGRAPH 2026), which pins an incompatible diffusers/
   transformers stack, so it runs in an **isolated venv driven as a subprocess**
-  (see :func:`_seethrough_env`) — local execution only, never the remote daemon.
+  (see :func:`_seethrough_env`). Works over the remote daemon too — the PSD
+  travels as bytes in the result payload — provided the *server* has that
+  isolated install.
 
 Modes:
 
@@ -199,7 +201,9 @@ def _generate_decompose(req: GenRequest, on_step=None):
     (hair, eyes, mouth, nose, ears, face, clothing) ordered by inferred depth.
     Returns a single result whose ``meta['_psd_path']`` the runner moves to the
     user's ``--out`` as a ``.psd`` (the preview image is the base, for the inline
-    terminal preview only — the layers live in the PSD).
+    terminal preview only — the layers live in the PSD). Under ``imggen serve``
+    that path is server-local, so the server ships the bytes instead and the
+    client re-stashes them (see :func:`imggen.server._encode_result`).
     """
     repo, py = _seethrough_env()
     seed = make_seeds(req.seed, 1)[0]
