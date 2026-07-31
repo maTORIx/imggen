@@ -34,4 +34,8 @@ def run(req: GenRequest, on_step=None):
         from . import seethrough
 
         return seethrough.generate(req, on_step=on_step)
+    if req.kind == "background-removal":
+        from . import bgremove
+
+        return bgremove.generate(req, on_step=on_step)
     raise ValueError(f"unknown kind: {req.kind}")

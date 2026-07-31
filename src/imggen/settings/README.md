@@ -17,9 +17,9 @@ This is the **one** place imggen reads models from (override the root with
 package are copied here **once on first use**; after that the directory is fully
 yours to edit, add to, or delete from.
 
-- `<kind>` — the backend the model plugs into: `sd`, `qwen-image`, or
-  `qwen-image-edit`. (The `see-through` backend resolves its base model through
-  `sd`, so its presets live under `sd/`.)
+- `<kind>` — the backend the model plugs into: `sd`, `qwen-image`,
+  `qwen-image-edit`, or `background-removal`. (The `see-through` backend resolves
+  its base model through `sd`, so its presets live under `sd/`.)
 - `<name>` — the file stem; this is the value you pass to `--model` / `-m`.
 
 Re-seed the built-ins at any time with `imggen init` (add `--force` to overwrite
@@ -90,6 +90,20 @@ Only `source` is required; every other key is optional.
 An explicit CLI flag **always** overrides the corresponding `defaults` value.
 `sampler` accepts any name from `imggen samplers` (e.g. `euler`, `ddim`,
 `dpm++_2m_karras`, `unipc`, `flowmatch`).
+
+Only the keys a backend reads have any effect. A `background-removal` preset,
+for instance, uses just `width` / `height` — the resolution its matting model
+runs at (1024 for `lucida` / `rmbg-1.4`, 2048 for `birefnet-hr`), which is
+independent of the output size:
+
+```jsonc
+// ~/.config/imggen/settings/background-removal/lucida.json
+{
+  "description": "Lucida — BiRefNet-HR fine-tune for soft alpha",
+  "source": { "hf_repo": "egeorcun/lucida" },
+  "defaults": { "width": 1024, "height": 1024 }
+}
+```
 
 ### Positive-prompt templates (`prompt_prefix` / `prompt_suffix`)
 

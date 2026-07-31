@@ -32,8 +32,9 @@ class GenRequest:
     mask_grow: int | None = None  # dilate (+) / erode (-) the mask, px
     mask_blur: float | None = None  # feather the mask edge, px
 
-    # see-through specific
-    mode: str = "transparent"  # "transparent" | "layers"
+    # see-through: "transparent" | "layers"
+    # background-removal: "transparent" | "mask"
+    mode: str = "transparent"
     method: str = "auto"  # "auto" | "layerdiffuse" | "matte" | "decompose"
     parts: str = "face"  # --method decompose: "face" (head split, body merged) | "all"
 

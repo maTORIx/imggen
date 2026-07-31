@@ -1,0 +1,5 @@
+{
+  "description": "BiRefNet-HR — high-resolution BiRefNet, run at its native 2048 px (MIT). Lucida's base model.",
+  "source": { "hf_repo": "ZhengPeng7/BiRefNet_HR" },
+  "defaults": { "width": 2048, "height": 2048 }
+}

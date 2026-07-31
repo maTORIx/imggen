@@ -1,0 +1,5 @@
+{
+  "description": "BRIA RMBG-1.4 — U^2-Net-derived matting, fast and light. Weights are non-commercial (bria-rmbg-1.4 license).",
+  "source": { "hf_repo": "briaai/RMBG-1.4" },
+  "defaults": { "width": 1024, "height": 1024 }
+}

@@ -14,6 +14,7 @@ Backends (`kind`):
 | `qwen-image`      | Qwen-Image text-to-image                                 | `qwen-image` (GGUF Q4) |
 | `qwen-image-edit` | Qwen-Image-Edit (2509) — instruction editing of an image | `qwen-image-edit` (GGUF Q4) |
 | `see-through`     | transparent PNG generation and layer decomposition       | `sdxl` + LayerDiffuse |
+| `background-removal` | cut the subject out of an existing image (RGBA)       | `lucida`      |
 
 Every model is described by a **preset** — a JSON manifest at
 `~/.config/imggen/settings/<kind>/<name>.json`. Built-in models are seeded there
@@ -46,8 +47,8 @@ machine. All presets live in a single directory —
 `$IMGGEN_HOME` / `$XDG_CONFIG_HOME`). The built-in models are copied there on
 first use; run `imggen init` to re-seed them.
 
-`<kind>` is a backend (`sd`, `qwen-image`, `qwen-image-edit`) and `<name>`
-becomes the `--model` value.
+`<kind>` is a backend (`sd`, `qwen-image`, `qwen-image-edit`,
+`background-removal`) and `<name>` becomes the `--model` value.
 
 **Create a preset from the CLI** — run a command with the options you want plus
 `--save --alias NAME`. It writes the preset instead of generating:
@@ -126,6 +127,38 @@ produces a **native transparent RGBA image** with a real alpha channel via
 soft/semi-transparent edges (hair, glass, glow) that background removal cannot.
 `--method matte` uses BiRefNet background removal instead; it is used
 automatically for `--init` decomposition and for `--mode layers`.
+
+### Background removal (`background-removal`)
+
+One image in, an RGBA cutout out — no prompt, no seed, one forward pass:
+
+```bash
+imggen background-removal -i photo.jpg -o cutout.png            # lucida (default)
+imggen background-removal -i photo.jpg -m birefnet-hr -o cutout.png
+imggen background-removal -i photo.jpg --mode mask -o matte.png # the alpha alone
+```
+
+| `--model` | what it is | runs at |
+| --- | --- | --- |
+| `lucida` (default) | BiRefNet-HR fine-tune ([egeorcun/lucida](https://huggingface.co/egeorcun/lucida), MIT) aimed at soft alpha: hair, glass, glow, text/logos, illustration | 1024 px |
+| `birefnet-hr` | [ZhengPeng7/BiRefNet_HR](https://huggingface.co/ZhengPeng7/BiRefNet_HR) (MIT), the base Lucida was fine-tuned from | 2048 px |
+| `rmbg-1.4` | [briaai/RMBG-1.4](https://huggingface.co/briaai/RMBG-1.4) — smaller and quicker U²-Net model; **weights are non-commercial** (bria-rmbg-1.4 license) | 1024 px |
+
+- **`--width`/`--height` set the resolution the *model* runs at**, not the output
+  size: the input is resized to that square, and the alpha is resized back onto
+  the original image. Bigger means finer edges and more memory —
+  `-W 1024 -H 1024` makes `birefnet-hr` affordable on a small card.
+- **`--mode mask`** writes the 8-bit matte instead of the cutout, which is what
+  `--mask` elsewhere in imggen expects.
+- Any other matting model works too — `-m briaai/RMBG-2.0` (gated: accept its
+  license on the Hub) or `-m ZhengPeng7/BiRefNet`. The pre/post-processing is
+  chosen from the loaded model's architecture, not from the name, so BiRefNet
+  fine-tunes and BRIA's U²-Net models each get their own (different) recipe.
+- Matting runs in **fp32** by default because bf16 grains the alpha; pass
+  `--dtype fp16` to halve the memory of a 2048 px run.
+- To *generate* a transparent image instead of cutting one out, use
+  `see-through` (LayerDiffuse) — it paints a real alpha channel rather than
+  predicting one after the fact.
 
 ### Region-locked editing (`--mask`)
 
@@ -321,8 +354,9 @@ imggen qwen-image-edit -i photo.png -p "make it snow" --out edited.png
 # Native transparent PNG (LayerDiffuse, real alpha with soft edges)
 imggen see-through -p "a cute robot mascot" --out robot.png
 
-# Background removal on an existing image (BiRefNet matting)
-imggen see-through -i photo.png --out cutout.png
+# Background removal on an existing image (Lucida / BiRefNet-HR / RMBG-1.4)
+imggen background-removal -i photo.png --out cutout.png
+imggen background-removal -i photo.png -m rmbg-1.4 --mode mask --out matte.png
 
 # Layer decomposition -> scene_fg.png (transparent) + scene_bg.png (filled)
 imggen see-through --mode layers -i scene.png --out scene.png
@@ -344,7 +378,7 @@ List aliases: `imggen models`.
 | `--sampler` | scheduler: `euler`, `dpm_2`, `dpm++_2m[_sde]`, `dpm++_3m_sde`, `unipc`, `deis`, `ddim`, `lcm`, `tcd`, `flowmatch`, plus `_karras`/`_exponential`/`_beta` variants (`imggen samplers`) |
 | `--seed` | base seed (consecutive across a batch) |
 | `-n, --num` | number of images |
-| `-i, --init` | input image (img2img / edit / see-through base) |
+| `-i, --init` | input image (img2img / edit / see-through base / background-removal input) |
 | `--strength` | img2img denoising strength |
 | `--device` / `--dtype` | `cuda`/`mps`/`cpu`, `bf16`/`fp16`/`fp32` (auto if unset) |
 | `--offload` | CPU-offload to save VRAM |

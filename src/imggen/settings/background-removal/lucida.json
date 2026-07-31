@@ -1,0 +1,5 @@
+{
+  "description": "Lucida — BiRefNet-HR fine-tune for soft alpha (hair, glass, glow, text, illustration). MIT. Default `background-removal` model.",
+  "source": { "hf_repo": "egeorcun/lucida" },
+  "defaults": { "width": 1024, "height": 1024 }
+}

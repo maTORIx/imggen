@@ -318,7 +318,17 @@ def _require_features(req: GenRequest, health: dict) -> None:
     back as an ordinary unmasked edit — plausible-looking output that quietly
     ignored the region lock. Better to say so. ``/health`` advertises what the
     server understands; an older one lists nothing, which is the case to catch.
+
+    An unknown *kind* would fail on the server anyway (``pipelines.run`` raises),
+    but only after uploading the images and waiting for the queue, so it is
+    checked here too — with a message that names the actual problem.
     """
+    kinds = health.get("kinds") or []
+    if kinds and req.kind not in kinds:
+        raise RemoteError(
+            f"the remote imggen has no '{req.kind}' backend (it offers: "
+            f"{', '.join(kinds)}). Update the server, or pass --local."
+        )
     if not req.mask:
         return
     if "mask" in (health.get("features") or []):

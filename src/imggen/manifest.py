@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ``<kind>`` directory names that may hold manifests.
-KINDS = ("sd", "qwen-image", "qwen-image-edit")
+KINDS = ("sd", "qwen-image", "qwen-image-edit", "background-removal")
 
 
 def config_home() -> Path:
@@ -96,9 +96,28 @@ def seed_settings(force: bool = False) -> list[Path]:
 
 
 def ensure_seeded() -> None:
-    """Seed the built-in presets on first use (when the root does not exist)."""
-    if not user_settings_dir().exists():
+    """Seed the built-in presets on first use, and when a new kind appears.
+
+    A fresh install gets everything. On an install that already has a settings
+    directory only *entirely missing kind directories* are filled in, so a preset
+    the user deleted stays deleted, while a kind introduced by a newer imggen
+    (``background-removal``, say) is usable straight away instead of failing to
+    resolve its default model until someone runs ``imggen init``.
+    """
+    dst = user_settings_dir()
+    if not dst.exists():
         seed_settings(force=False)
+        return
+    src = _bundled_settings_dir()
+    if not src.is_dir():
+        return
+    for kind_dir in sorted(src.iterdir()):
+        target = dst / kind_dir.name
+        if not kind_dir.is_dir() or target.exists():
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        for jf in sorted(kind_dir.glob("*.json")):
+            (target / jf.name).write_text(jf.read_text())
 
 
 def settings_dirs() -> list[Path]:

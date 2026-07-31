@@ -1,7 +1,8 @@
 """imggen command-line interface.
 
 Usage: ``imggen <kind> --prompt "..." [options]`` where kind is one of
-``sd``, ``qwen-image``, ``qwen-image-edit``, ``see-through``.
+``sd``, ``qwen-image``, ``qwen-image-edit``, ``see-through``,
+``background-removal``.
 
 Any invocation can be stored as a reusable preset with ``--save --alias NAME``
 (writes ``~/.config/imggen/settings/<kind>/NAME.json``) and recalled later with
@@ -237,9 +238,16 @@ def _save_preset(ctx: typer.Context, kind: str, model, alias, desc) -> None:
     if defaults:
         typer.echo("  defaults: " + ", ".join(f"{k}={v}" for k, v in defaults.items()))
     typer.secho(
-        f'  recall: imggen {ctx.command.name} --model {alias} -p "..."',
+        f"  recall: imggen {ctx.command.name} --model {alias} {_recall_args(ctx.command.name)}",
         fg=typer.colors.BRIGHT_BLACK,
     )
+
+
+def _recall_args(kind: str) -> str:
+    """Example arguments shown when telling the user how to reuse a preset."""
+    if kind == "background-removal":
+        return "-i in.png -o out.png"  # this kind takes an image, not a prompt
+    return '-p "..."'
 
 
 def _require(value, flag: str):
@@ -468,6 +476,57 @@ def see_through(
             model=model, width=width, height=height, steps=steps,
             cfg=cfg, sampler=sampler, seed=seed, num=num, batch_size=batch_size,
             device=device, dtype=dtype, offload=offload, hf_token=hf_token,
+        ),
+        out, metadata, local, preview,
+    )
+
+
+@app.command("background-removal")
+def background_removal(
+    ctx: typer.Context,
+    init: Optional[str] = Init,
+    out: Optional[str] = Out,
+    mode: str = typer.Option(
+        "transparent", "--mode",
+        help="transparent = RGBA cutout | mask = the alpha matte alone (feed it to --mask).",
+    ),
+    model: Optional[str] = Model,
+    width: Optional[int] = typer.Option(
+        None, "--width", "-W",
+        help="Resolution the matting model runs at (default: the preset's — 1024 "
+             "for lucida/rmbg-1.4, 2048 for birefnet-hr). The output keeps the "
+             "input image's size either way.",
+    ),
+    height: Optional[int] = typer.Option(None, "--height", "-H", help="See --width."),
+    device: Optional[str] = Device,
+    dtype: Optional[str] = Dtype,
+    hf_token: Optional[str] = HfToken,
+    metadata: bool = Meta,
+    local: bool = LocalOpt,
+    preview: bool = Preview,
+    save: bool = Save,
+    alias: Optional[str] = Alias,
+    desc: Optional[str] = Desc,
+):
+    """Remove the background of an image (Lucida / BiRefNet-HR / RMBG-1.4).
+
+    One image in, an RGBA cutout out — no prompt, no seed. `--model` picks the
+    matting network: `lucida` (default) is a BiRefNet-HR fine-tune strong on soft
+    alpha (hair, glass, glow, illustration), `birefnet-hr` is its 2048 px base,
+    and `rmbg-1.4` is BRIA's lighter U^2-Net model (non-commercial weights).
+
+    To *generate* a transparent image rather than cut one out, use `see-through`.
+    """
+    if save or alias is not None:
+        return _save_preset(ctx, "background-removal", model, alias, desc)
+    _require(init, "--init")
+    if mode not in ("transparent", "mask"):
+        raise typer.BadParameter("mode must be 'transparent' or 'mask'")
+    _go(
+        GenRequest(
+            kind="background-removal", init=init, mode=mode, model=model,
+            width=width, height=height, device=device, dtype=dtype,
+            hf_token=hf_token,
         ),
         out, metadata, local, preview,
     )
@@ -765,7 +824,7 @@ def _pull_install(catalog, kind: str, alias: str, force: bool, hf_token_arg) -> 
 
     typer.secho(f"weights ready: {local}", fg=typer.colors.GREEN)
     typer.secho(
-        f'  recall: imggen {_recall_cmd(kind)} --model {alias} -p "..."',
+        f"  recall: imggen {_recall_cmd(kind)} --model {alias} {_recall_args(kind)}",
         fg=typer.colors.BRIGHT_BLACK,
     )
 
@@ -773,7 +832,7 @@ def _pull_install(catalog, kind: str, alias: str, force: bool, hf_token_arg) -> 
 @app.command()
 def pull(
     kind: Optional[str] = typer.Argument(
-        None, help="Model kind: sd | qwen-image | qwen-image-edit.",
+        None, help="Model kind: sd | qwen-image | qwen-image-edit | background-removal.",
         autocompletion=_complete_kind,
     ),
     alias: Optional[str] = typer.Argument(
@@ -892,7 +951,7 @@ def _render_models(source: str, models_by_kind: dict, defaults: dict, only: str 
 @app.command("models")
 def models(
     kind: Optional[str] = typer.Argument(
-        None, help="Only list presets for this kind (sd | qwen-image | qwen-image-edit).",
+        None, help="Only list presets for this kind (sd | qwen-image | qwen-image-edit | background-removal).",
         autocompletion=_complete_kind,
     ),
     local: bool = LocalOpt,

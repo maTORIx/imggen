@@ -27,6 +27,7 @@ DEFAULT_MODEL: dict[str, str] = {
     "qwen-image": "qwen-image",
     "qwen-image-edit": "qwen-image-edit",
     "see-through": "sdxl",  # base generator; matting model is fixed (BiRefNet)
+    "background-removal": "lucida",
 }
 
 # Base diffusers repo used for the non-transformer components (text encoder,
